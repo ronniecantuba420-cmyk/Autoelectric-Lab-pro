@@ -1,6 +1,15 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Activity, Play, Pause, RotateCcw, Sliders } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Activity, ArrowLeftRight, ArrowUpDown, GitCompare, Pause, Play } from 'lucide-react';
+import { EcuPin, InjectedFault } from '../types/ecu';
 import { SignalGenerator } from '../simulation/signals/SignalGenerator';
+
+type ScopeSignalMode =
+  | 'CAN_BUS'
+  | 'INJECTOR_PWM'
+  | 'CRANK_CKP'
+  | 'O2_LAMBDA'
+  | 'TPS_DC'
+  | 'DUAL_PIN';
 
 interface OscilloscopeProps {
   isPowerOn: boolean;
@@ -11,6 +20,27 @@ interface OscilloscopeProps {
   emulatorRpm?: number;
   isRpmEmulatorActive?: boolean;
   isInjectorFiring?: boolean;
+  pins?: EcuPin[];
+  nodeVoltages?: Record<string, number>;
+  faults?: InjectedFault[];
+  selectedPinId?: string | null;
+  onSelectPin?: (pinId: string) => void;
+}
+
+function pickCompanionPinId(ch1Id: string, pins: EcuPin[]): string {
+  const pairs: Record<string, string> = {
+    'ecu-pin-13': 'ecu-pin-14',
+    'ecu-pin-14': 'ecu-pin-13',
+    'ecu-pin-10': 'ecu-pin-11',
+    'ecu-pin-11': 'ecu-pin-10',
+    'ecu-pin-7': 'ecu-pin-8',
+    'ecu-pin-8': 'ecu-pin-7',
+    'ecu-pin-3': 'ecu-pin-4',
+    'ecu-pin-4': 'ecu-pin-3',
+  };
+  const preferred = pairs[ch1Id];
+  if (preferred && pins.some((p) => p.id === preferred)) return preferred;
+  return pins.find((p) => p.id !== ch1Id)?.id || ch1Id;
 }
 
 export const Oscilloscope: React.FC<OscilloscopeProps> = ({
@@ -22,17 +52,94 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
   emulatorRpm = 1200,
   isRpmEmulatorActive = false,
   isInjectorFiring = true,
+  pins = [],
+  nodeVoltages = {},
+  faults = [],
+  selectedPinId = null,
+  onSelectPin,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isRunning, setIsRunning] = useState(true);
   const [voltDiv, setVoltDiv] = useState(1.0);
   const [timeDiv, setTimeDiv] = useState(1.0);
-  const [activeSignal, setActiveSignal] = useState<'CAN_BUS' | 'INJECTOR_PWM' | 'CRANK_CKP' | 'TPS_DC' | 'O2_LAMBDA'>(selectedSignal);
+  const [activeSignal, setActiveSignal] = useState<ScopeSignalMode>(selectedSignal);
+  const [localCh1PinId, setLocalCh1PinId] = useState<string>('ecu-pin-10');
+  const [ch2PinId, setCh2PinId] = useState<string>('ecu-pin-11');
+  const [isAutoScale, setIsAutoScale] = useState(false);
 
   useEffect(() => {
-    setActiveSignal(selectedSignal);
+    setActiveSignal((prev) => (prev === 'DUAL_PIN' ? prev : selectedSignal));
   }, [selectedSignal]);
+
+  const effectiveCh1PinId = selectedPinId || localCh1PinId;
+
+  const ch1Pin = useMemo(
+    () => pins.find((p) => p.id === effectiveCh1PinId) || pins[0] || null,
+    [pins, effectiveCh1PinId]
+  );
+
+  const ch2Pin = useMemo(() => {
+    if (pins.length === 0) return null;
+    return (
+      pins.find((p) => p.id === ch2PinId) ||
+      pins.find((p) => p.id === pickCompanionPinId(ch1Pin?.id || '', pins)) ||
+      pins[0]
+    );
+  }, [pins, ch2PinId, ch1Pin]);
+
+  const ch1FaultType = useMemo(
+    () => (ch1Pin ? faults.find((f) => f.pinId === ch1Pin.id)?.faultType ?? 'NONE' : 'NONE'),
+    [faults, ch1Pin]
+  );
+
+  const ch2FaultType = useMemo(
+    () => (ch2Pin ? faults.find((f) => f.pinId === ch2Pin.id)?.faultType ?? 'NONE' : 'NONE'),
+    [faults, ch2Pin]
+  );
+
+  const ch1MnaVoltage = ch1Pin ? nodeVoltages[ch1Pin.id] ?? ch1Pin.nominalVoltage : 0;
+  const ch2MnaVoltage = ch2Pin ? nodeVoltages[ch2Pin.id] ?? ch2Pin.nominalVoltage : 0;
+
+  const activeRpm = isRpmEmulatorActive ? emulatorRpm : 1200;
+  const dualWindowMs = Math.max(10, Math.round(40 / timeDiv));
+
+  // Stationary telemetry snapshot for DUAL_PIN mode (no animation loop state churn)
+  const dualTelemetry = useMemo(() => {
+    if (activeSignal !== 'DUAL_PIN' || !ch1Pin || !ch2Pin) return null;
+    return SignalGenerator.sampleDualPinWaveformSeries({
+      ch1PinId: ch1Pin.id,
+      ch1PinLabel: ch1Pin.label,
+      ch1MnaVoltage,
+      ch1FaultType,
+      ch2PinId: ch2Pin.id,
+      ch2PinLabel: ch2Pin.label,
+      ch2MnaVoltage,
+      ch2FaultType,
+      isPowerOn,
+      hasCanFault,
+      hasInjectorFault,
+      isInjectorFiring,
+      rpm: activeRpm,
+      tStartSec: 0,
+      windowMs: dualWindowMs,
+      sampleCount: 128,
+    });
+  }, [
+    activeSignal,
+    ch1Pin,
+    ch2Pin,
+    ch1MnaVoltage,
+    ch1FaultType,
+    ch2MnaVoltage,
+    ch2FaultType,
+    isPowerOn,
+    hasCanFault,
+    hasInjectorFault,
+    isInjectorFiring,
+    activeRpm,
+    dualWindowMs,
+  ]);
 
   // Live physical measurements calculated from simulation parameters
   let measuredVpp = '0.00 V';
@@ -40,9 +147,15 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
   let measuredDuty = '0.0 %';
   let measuredVrms = '0.00 V';
 
-  const activeRpm = isRpmEmulatorActive ? emulatorRpm : 1200;
-
-  if (isPowerOn) {
+  if (activeSignal === 'DUAL_PIN' && dualTelemetry) {
+    const f1 = dualTelemetry.ch1Stats.freqHz;
+    measuredVpp = `${dualTelemetry.ch1Stats.vpp.toFixed(2)} / ${dualTelemetry.ch2Stats.vpp.toFixed(2)} V`;
+    measuredFreq = f1 >= 1000 ? `${(f1 / 1000).toFixed(1)} kHz` : `${f1.toFixed(1)} Hz`;
+    measuredDuty =
+      dualTelemetry.correlationR !== null ? `r=${dualTelemetry.correlationR.toFixed(2)}` : 'DC/Flat';
+    measuredVrms =
+      dualTelemetry.phaseDiffDeg !== null ? `Δφ ${dualTelemetry.phaseDiffDeg.toFixed(1)}°` : `ΔV ${dualTelemetry.avgDiffV.toFixed(2)}V`;
+  } else if (isPowerOn) {
     if (activeSignal === 'CAN_BUS') {
       measuredVpp = hasCanFault ? '0.00 V' : '2.00 V';
       measuredFreq = hasCanFault ? '0.0 kHz' : '500.0 kHz';
@@ -163,7 +276,126 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
 
       ctx.lineWidth = 2.5;
 
-      if (activeSignal === 'CAN_BUS') {
+      if (activeSignal === 'DUAL_PIN' && ch1Pin && ch2Pin) {
+        const dual = SignalGenerator.sampleDualPinWaveformSeries({
+          ch1PinId: ch1Pin.id,
+          ch1PinLabel: ch1Pin.label,
+          ch1MnaVoltage,
+          ch1FaultType,
+          ch2PinId: ch2Pin.id,
+          ch2PinLabel: ch2Pin.label,
+          ch2MnaVoltage,
+          ch2FaultType,
+          isPowerOn,
+          hasCanFault,
+          hasInjectorFault,
+          isInjectorFiring,
+          rpm: activeRpm,
+          tStartSec: simTime,
+          windowMs: dualWindowMs,
+          sampleCount: 128,
+        });
+
+        const samples = dual.samples;
+        const padTop = 34;
+        const padBottom = 30;
+        const usableH = Math.max(40, height - padTop - padBottom);
+
+        if (isAutoScale) {
+          // Shared normalized 0–100% viewport with 0%, 50%, and 100% guide lines
+          ctx.save();
+          ctx.strokeStyle = '#10b98133';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.font = '9px monospace';
+          ctx.fillStyle = '#34d399cc';
+          ctx.textAlign = 'right';
+          [
+            { pct: 100, label: '100%', offsetY: 10 },
+            { pct: 50, label: '50%', offsetY: -4 },
+            { pct: 0, label: '0%', offsetY: -4 },
+          ].forEach(({ pct, label, offsetY }) => {
+            const gy = padTop + (1 - pct / 100) * usableH;
+            ctx.beginPath();
+            ctx.moveTo(0, gy);
+            ctx.lineTo(width, gy);
+            ctx.stroke();
+            ctx.fillText(label, width - 8, gy + offsetY);
+          });
+          ctx.restore();
+
+          ctx.lineWidth = 2.25;
+          // CH1 Normalized (Yellow) across shared full viewport
+          ctx.strokeStyle = '#facc15';
+          ctx.shadowColor = '#facc15';
+          ctx.shadowBlur = 5;
+          ctx.beginPath();
+          for (let i = 0; i < samples.length; i++) {
+            const x = (i / Math.max(1, samples.length - 1)) * width;
+            const y = padTop + (1 - samples[i].ch1Norm / 100) * usableH;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+
+          // CH2 Normalized (Cyan) across exact same shared viewport
+          ctx.strokeStyle = '#22d3ee';
+          ctx.shadowColor = '#22d3ee';
+          ctx.shadowBlur = 5;
+          ctx.beginPath();
+          for (let i = 0; i < samples.length; i++) {
+            const x = (i / Math.max(1, samples.length - 1)) * width;
+            const y = padTop + (1 - samples[i].ch2Norm / 100) * usableH;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        } else {
+          const ch1BandMax = Math.max(5, dual.ch1Stats.vMax > 15 ? 68 : Math.ceil(dual.ch1Stats.vMax + 1));
+          const ch2BandMax = Math.max(5, dual.ch2Stats.vMax > 15 ? 68 : Math.ceil(dual.ch2Stats.vMax + 1));
+          const midY = padTop + usableH * 0.5;
+          const halfBand = Math.max(18, usableH * 0.42);
+
+          // Band separator for dual-pin CRT clarity
+          ctx.strokeStyle = '#134e4a55';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(0, midY);
+          ctx.lineTo(width, midY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          ctx.lineWidth = 2.25;
+          // CH1 (Upper band, Yellow)
+          ctx.strokeStyle = '#facc15';
+          ctx.shadowColor = '#facc15';
+          ctx.shadowBlur = 5;
+          ctx.beginPath();
+          for (let i = 0; i < samples.length; i++) {
+            const x = (i / Math.max(1, samples.length - 1)) * width;
+            const norm = Math.min(1.15, Math.max(-0.15, samples[i].ch1 / ch1BandMax));
+            const y = midY - 6 - norm * halfBand * Math.min(1.3, voltDiv);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+
+          // CH2 (Lower band, Cyan)
+          ctx.strokeStyle = '#22d3ee';
+          ctx.shadowColor = '#22d3ee';
+          ctx.shadowBlur = 5;
+          ctx.beginPath();
+          for (let i = 0; i < samples.length; i++) {
+            const x = (i / Math.max(1, samples.length - 1)) * width;
+            const norm = Math.min(1.15, Math.max(-0.15, samples[i].ch2 / ch2BandMax));
+            const y = height - padBottom - norm * halfBand * Math.min(1.3, voltDiv);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        }
+      } else if (activeSignal === 'CAN_BUS') {
         const dt = 0.000008 / timeDiv;
         const halfH = height / 2;
         const scale = 45 * voltDiv;
@@ -295,7 +527,38 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
       canvas.width = 0;
       canvas.height = 0;
     };
-  }, [isPowerOn, isRunning, activeSignal, hasCanFault, hasInjectorFault, timeDiv, voltDiv, simulationSpeed, activeRpm, isInjectorFiring]);
+  }, [
+    isPowerOn,
+    isRunning,
+    activeSignal,
+    hasCanFault,
+    hasInjectorFault,
+    timeDiv,
+    voltDiv,
+    simulationSpeed,
+    activeRpm,
+    isInjectorFiring,
+    ch1Pin,
+    ch2Pin,
+    ch1MnaVoltage,
+    ch2MnaVoltage,
+    ch1FaultType,
+    ch2FaultType,
+    dualWindowMs,
+    isAutoScale,
+  ]);
+
+  const handleSelectCh1Pin = (pinId: string) => {
+    setLocalCh1PinId(pinId);
+    onSelectPin?.(pinId);
+  };
+
+  const handleSwapDualPins = () => {
+    if (!ch1Pin || !ch2Pin) return;
+    const prev1 = ch1Pin.id;
+    handleSelectCh1Pin(ch2Pin.id);
+    setCh2PinId(prev1);
+  };
 
   return (
     <div className="hud-panel rounded-xl p-2.5 sm:p-3.5 text-slate-100 flex flex-col gap-2.5 sm:gap-3 shrink-0">
@@ -335,13 +598,34 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
 
         {/* Live HUD Waveform Annotations */}
         <div className="absolute top-2 left-2 right-2 flex flex-wrap gap-1.5 text-[9.5px] sm:text-[10px] font-mono pointer-events-none">
-          <span className="text-yellow-400 font-bold bg-slate-950/85 px-1.5 sm:px-2 py-0.5 rounded border border-yellow-500/40 truncate">
-            CH1: {activeSignal === 'CAN_BUS' ? 'CAN_H (3.5V)' : activeSignal}
-          </span>
-          {activeSignal === 'CAN_BUS' && (
-            <span className="text-cyan-400 font-bold bg-slate-950/85 px-1.5 sm:px-2 py-0.5 rounded border border-cyan-500/40 truncate">
-              CH2: CAN_L (1.5V Diff)
-            </span>
+          {activeSignal === 'DUAL_PIN' && ch1Pin && ch2Pin ? (
+            <>
+              <span className="text-yellow-400 font-bold bg-slate-950/85 px-1.5 sm:px-2 py-0.5 rounded border border-yellow-500/40 truncate">
+                CH1: #{ch1Pin.pinNumber} {ch1Pin.label} ({ch1MnaVoltage.toFixed(2)}V)
+              </span>
+              <span className="text-cyan-400 font-bold bg-slate-950/85 px-1.5 sm:px-2 py-0.5 rounded border border-cyan-500/40 truncate">
+                CH2: #{ch2Pin.pinNumber} {ch2Pin.label} ({ch2MnaVoltage.toFixed(2)}V)
+              </span>
+              {dualTelemetry && (
+                <span className="text-purple-300 font-bold bg-slate-950/85 px-1.5 sm:px-2 py-0.5 rounded border border-purple-500/40 truncate">
+                  {dualTelemetry.correlationMode.replace('_', ' ')}
+                  {dualTelemetry.timeLagMs !== null
+                    ? ` · Δt ${dualTelemetry.timeLagMs >= 0 ? '+' : ''}${dualTelemetry.timeLagMs.toFixed(2)}ms`
+                    : ''}
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <span className="text-yellow-400 font-bold bg-slate-950/85 px-1.5 sm:px-2 py-0.5 rounded border border-yellow-500/40 truncate">
+                CH1: {activeSignal === 'CAN_BUS' ? 'CAN_H (3.5V)' : activeSignal}
+              </span>
+              {activeSignal === 'CAN_BUS' && (
+                <span className="text-cyan-400 font-bold bg-slate-950/85 px-1.5 sm:px-2 py-0.5 rounded border border-cyan-500/40 truncate">
+                  CH2: CAN_L (1.5V Diff)
+                </span>
+              )}
+            </>
           )}
         </div>
 
@@ -350,17 +634,120 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5">
             <span>Vpp: <strong className="text-cyan-300 font-mono tabular-nums">{measuredVpp}</strong></span>
             <span>Freq: <strong className="text-emerald-300 font-mono tabular-nums">{measuredFreq}</strong></span>
-            <span>Duty: <strong className="text-amber-300 font-mono tabular-nums">{measuredDuty}</strong></span>
-            <span>Vrms: <strong className="text-slate-200 font-mono tabular-nums">{measuredVrms}</strong></span>
+            <span>{activeSignal === 'DUAL_PIN' ? 'Corr:' : 'Duty:'} <strong className="text-amber-300 font-mono tabular-nums">{measuredDuty}</strong></span>
+            <span>{activeSignal === 'DUAL_PIN' ? 'Phase:' : 'Vrms:'} <strong className="text-slate-200 font-mono tabular-nums">{measuredVrms}</strong></span>
           </div>
-          <div className="hidden sm:block text-[9px] text-slate-500">TRIGGER: AUTO EDGE &uarr;</div>
+          <div className="hidden sm:block text-[9px] text-slate-500">
+            {activeSignal === 'DUAL_PIN'
+              ? isAutoScale
+                ? `WIN: ${dualWindowMs}ms · AUTO-SCALE: 0–100% OVERLAY`
+                : `WIN: ${dualWindowMs}ms · DUAL-PIN SYNC`
+              : 'TRIGGER: AUTO EDGE ↑'}
+          </div>
         </div>
       </div>
+
+      {/* Dual-Pin Selector Bar (shown when Dual Pin A/B mode is active) */}
+      {activeSignal === 'DUAL_PIN' && pins.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono bg-slate-950/80 border border-cyan-500/20 rounded-lg px-2.5 py-1.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1 text-yellow-300 font-semibold">
+              <span>CH1 Pin:</span>
+              <select
+                aria-label="CRT Scope CH1 Pin"
+                value={ch1Pin?.id || ''}
+                onChange={(e) => handleSelectCh1Pin(e.target.value)}
+                className="bg-slate-900 border border-yellow-500/40 rounded px-1.5 py-0.5 text-yellow-200 focus:outline-none cursor-pointer"
+              >
+                {pins.map((pin) => (
+                  <option key={pin.id} value={pin.id}>
+                    #{pin.pinNumber} {pin.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button
+              type="button"
+              onClick={handleSwapDualPins}
+              aria-label="Swap CRT CH1 and CH2 pins"
+              title="Swap CH1 and CH2 pins"
+              className="p-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-cyan-300"
+            >
+              <ArrowLeftRight className="w-3 h-3" />
+            </button>
+
+            <label className="flex items-center gap-1 text-cyan-300 font-semibold">
+              <span>CH2 Pin:</span>
+              <select
+                aria-label="CRT Scope CH2 Pin"
+                value={ch2Pin?.id || ''}
+                onChange={(e) => setCh2PinId(e.target.value)}
+                className="bg-slate-900 border border-cyan-500/40 rounded px-1.5 py-0.5 text-cyan-200 focus:outline-none cursor-pointer"
+              >
+                {pins.map((pin) => (
+                  <option key={pin.id} value={pin.id}>
+                    #{pin.pinNumber} {pin.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button
+              type="button"
+              onClick={() => setIsAutoScale((prev) => !prev)}
+              aria-pressed={isAutoScale}
+              aria-label="Toggle CRT Auto-Scale normalized overlay"
+              title="Normalize both channels to 0–100% in the same CRT viewport for direct phase & edge alignment"
+              className={`px-2 py-0.5 rounded border text-[10px] font-bold flex items-center gap-1 transition ${
+                isAutoScale
+                  ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
+                  : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-emerald-500/50'
+              }`}
+            >
+              <ArrowUpDown className="w-3 h-3" />
+              <span>Auto-Scale</span>
+            </button>
+          </div>
+          {dualTelemetry && (
+            <div className="flex flex-wrap items-center gap-2 text-slate-300 tabular-nums">
+              {isAutoScale && (
+                <span className="px-1.5 py-0.5 rounded border bg-emerald-950/85 border-emerald-500/45 text-emerald-300 text-[9px] font-bold">
+                  AUTO-SCALE 0–100%
+                  {dualTelemetry.autoScale.amplitudeRatio !== null
+                    ? ` · ${dualTelemetry.autoScale.amplitudeRatio.toFixed(2)}×`
+                    : ''}
+                </span>
+              )}
+              <span>
+                Avg ΔV:{' '}
+                <strong className="text-amber-300">
+                  {dualTelemetry.avgDiffV >= 0 ? '+' : ''}
+                  {dualTelemetry.avgDiffV.toFixed(2)}V
+                </strong>
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Control Bar & Channel Selector */}
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono pt-1 border-t border-cyan-500/15">
         <div className="flex items-center gap-1 overflow-x-auto scrollbar-none w-full sm:w-auto sm:flex-wrap pb-0.5">
           <span className="text-[10px] text-slate-400 uppercase whitespace-nowrap shrink-0 mr-0.5">CH:</span>
+          {pins.length >= 2 && (
+            <button
+              onClick={() => setActiveSignal('DUAL_PIN')}
+              className={`px-2 py-1 text-[10px] rounded border transition whitespace-nowrap shrink-0 flex items-center gap-1 ${
+                activeSignal === 'DUAL_PIN'
+                  ? 'bg-cyan-950/90 border-cyan-400 text-cyan-200 font-semibold'
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+              }`}
+            >
+              <GitCompare className="w-3 h-3" />
+              Dual Pin A/B
+            </button>
+          )}
           <button
             onClick={() => setActiveSignal('CAN_BUS')}
             className={`px-2 py-1 text-[10px] rounded border transition whitespace-nowrap shrink-0 ${
@@ -453,3 +840,4 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
     </div>
   );
 };
+

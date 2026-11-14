@@ -1,17 +1,24 @@
-import React from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import {
   AlertTriangle,
   Bot,
   Box,
   BookOpen,
   CheckCircle2,
+  ChevronDown,
   FileText,
   Globe,
   HelpCircle,
   RotateCcw,
   Save,
+  type LucideIcon,
 } from 'lucide-react';
-import { CircuitSolution } from '../utils/circuitSolver';
+
+import type { CircuitSolution } from '../utils/circuitSolver';
+
+// -----------------------------------------------------------------------------
+// Types
+// -----------------------------------------------------------------------------
 
 export type LabTab =
   | 'BENCH_LAB'
@@ -23,9 +30,10 @@ export type LabTab =
   | 'REPAIR_GUIDE';
 
 export type RackFilter = 'ALL' | 'DMM_POWER' | 'FAULT_MATRIX';
+
 export type MobileBenchPane = 'INSTRUMENTS' | 'CANVAS' | 'GUIDE';
 
-interface LabTopNavProps {
+export interface LabTopNavProps {
   activeTab: LabTab;
   onSelectTab: (tab: LabTab) => void;
   simulationSpeed: number;
@@ -40,15 +48,214 @@ interface LabTopNavProps {
   onResetLab: () => void;
 }
 
-const NAV_TABS: Array<{ id: LabTab; label: string; icon?: 'box' | 'book' }> = [
+type ActionTone = 'emerald' | 'blue' | 'amber' | 'cyan' | 'neutral';
+
+interface NavigationItem {
+  id: LabTab;
+  label: string;
+  icon?: LucideIcon;
+}
+
+interface UtilityAction {
+  id: string;
+  label: string;
+  description: string;
+  icon: LucideIcon;
+  tone: ActionTone;
+  onClick: () => void;
+}
+
+// -----------------------------------------------------------------------------
+// Configuration
+// -----------------------------------------------------------------------------
+
+const BRAND_IMAGE =
+  '/assets/aistudio/file_0000000098d48211abb177ce752b7b0e_62980da7.png';
+
+const NAV_TABS: readonly NavigationItem[] = [
   { id: 'BENCH_LAB', label: 'Bench Lab' },
   { id: 'WIRING_DIAGRAM', label: 'Harness Wiring' },
-  { id: 'THREE_D_TWIN', label: '3D Bench Twin', icon: 'box' },
+  { id: 'THREE_D_TWIN', label: '3D Bench Twin', icon: Box },
   { id: 'ECU_PINOUT', label: 'ECU Pinouts' },
   { id: 'OSCILLOSCOPE', label: 'Oscilloscope' },
   { id: 'PCB_SCANNER', label: 'PCB Scanner' },
-  { id: 'REPAIR_GUIDE', label: 'Repair Manuals', icon: 'book' },
+  { id: 'REPAIR_GUIDE', label: 'Repair Manuals', icon: BookOpen },
 ];
+
+const SIMULATION_SPEEDS = [
+  { value: 0.25, label: '0.25× · Slow motion' },
+  { value: 0.5, label: '0.5× · Slow' },
+  { value: 1, label: '1× · Realtime' },
+  { value: 2, label: '2× · Fast' },
+  { value: 4, label: '4× · Turbo' },
+] as const;
+
+const FOCUS_STYLES =
+  'focus-visible:outline-none focus-visible:ring-2 ' +
+  'focus-visible:ring-cyan-300 focus-visible:ring-offset-2 ' +
+  'focus-visible:ring-offset-slate-950';
+
+const ACTION_TONES: Record<ActionTone, string> = {
+  emerald:
+    'border-emerald-500/25 bg-emerald-500/10 text-emerald-200 ' +
+    'hover:border-emerald-400/50 hover:bg-emerald-500/20',
+
+  blue:
+    'border-blue-500/25 bg-blue-500/10 text-blue-200 ' +
+    'hover:border-blue-400/50 hover:bg-blue-500/20',
+
+  amber:
+    'border-amber-500/25 bg-amber-500/10 text-amber-200 ' +
+    'hover:border-amber-400/50 hover:bg-amber-500/20',
+
+  cyan:
+    'border-cyan-300/60 bg-cyan-400 text-slate-950 ' +
+    'hover:border-cyan-200 hover:bg-cyan-300',
+
+  neutral:
+    'border-white/10 bg-white/[0.03] text-slate-300 ' +
+    'hover:border-white/20 hover:bg-white/[0.07] hover:text-white',
+};
+
+// -----------------------------------------------------------------------------
+// Reusable elements
+// -----------------------------------------------------------------------------
+
+function UtilityButton({ action }: { action: UtilityAction }) {
+  const Icon = action.icon;
+
+  return (
+    <button
+      type="button"
+      onClick={action.onClick}
+      aria-label={action.label}
+      title={action.description}
+      className={[
+        'inline-flex min-h-10 min-w-10 shrink-0 items-center justify-center',
+        'gap-2 whitespace-nowrap rounded-lg border px-3 py-2',
+        'text-xs font-semibold',
+        'transition-colors motion-reduce:transition-none',
+        FOCUS_STYLES,
+        ACTION_TONES[action.tone],
+      ].join(' ')}
+    >
+      <Icon
+        aria-hidden="true"
+        className="h-4 w-4 shrink-0"
+        strokeWidth={1.8}
+      />
+
+      <span className="hidden 2xl:inline">{action.label}</span>
+    </button>
+  );
+}
+
+interface SimulationSpeedSelectProps {
+  value: number;
+  onChange: (speed: number) => void;
+}
+
+function SimulationSpeedSelect({
+  value,
+  onChange,
+}: SimulationSpeedSelectProps) {
+  const selectId = useId();
+
+  const handleChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const nextSpeed = Number(event.target.value);
+
+    if (SIMULATION_SPEEDS.some((speed) => speed.value === nextSpeed)) {
+      onChange(nextSpeed);
+    }
+  };
+
+  return (
+    <div className="relative shrink-0">
+      <label htmlFor={selectId} className="sr-only">
+        Simulation speed
+      </label>
+
+      <select
+        id={selectId}
+        value={value}
+        onChange={handleChange}
+        className={[
+          'min-h-10 w-40 appearance-none rounded-lg',
+          'border border-white/10 bg-slate-900',
+          'py-2 pl-3 pr-9',
+          'font-mono text-xs font-semibold text-cyan-200',
+          'cursor-pointer transition-colors hover:border-cyan-400/40',
+          'motion-reduce:transition-none',
+          FOCUS_STYLES,
+        ].join(' ')}
+      >
+        {SIMULATION_SPEEDS.map((speed) => (
+          <option key={speed.value} value={speed.value}>
+            {speed.label}
+          </option>
+        ))}
+      </select>
+
+      <ChevronDown
+        aria-hidden="true"
+        className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
+      />
+    </div>
+  );
+}
+
+function BenchTelemetry({
+  circuitSolution,
+}: {
+  circuitSolution: CircuitSolution;
+}) {
+  const current = circuitSolution.supplyCurrentDrawAmps;
+  const faultCount = circuitSolution.activeDTCs.length;
+  const hasFaults = faultCount > 0;
+
+  const currentLabel = Number.isFinite(current)
+    ? `${current.toFixed(2)} A`
+    : 'Unavailable';
+
+  const StatusIcon = hasFaults ? AlertTriangle : CheckCircle2;
+
+  return (
+    <div
+      role="group"
+      aria-label="Bench telemetry"
+      className="hidden shrink-0 items-center gap-4 border-l border-white/10 pl-4 font-mono text-[11px] xl:flex"
+    >
+      <div className="flex items-center gap-2">
+        <span className="uppercase tracking-wider text-slate-500">
+          Draw
+        </span>
+
+        <span className="font-semibold tabular-nums text-amber-300">
+          <span className="sr-only">Supply current: </span>
+          {currentLabel}
+        </span>
+      </div>
+
+      <span
+        className={[
+          'inline-flex items-center gap-1.5 whitespace-nowrap',
+          'font-semibold uppercase tracking-wide',
+          hasFaults ? 'text-rose-300' : 'text-emerald-300',
+        ].join(' ')}
+      >
+        <StatusIcon aria-hidden="true" className="h-3.5 w-3.5" />
+
+        {hasFaults
+          ? `${faultCount} ${faultCount === 1 ? 'fault' : 'faults'}`
+          : 'Nominal'}
+      </span>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Main component
+// -----------------------------------------------------------------------------
 
 export const LabTopNav: React.FC<LabTopNavProps> = ({
   activeTab,
@@ -64,228 +271,197 @@ export const LabTopNav: React.FC<LabTopNavProps> = ({
   onOpenIntroModal,
   onResetLab,
 }) => {
+  const navigationRef = useRef<HTMLElement>(null);
+  const activeButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Reveal the active section without moving the surrounding page vertically.
+  useEffect(() => {
+    const navigation = navigationRef.current;
+    const activeButton = activeButtonRef.current;
+
+    if (!navigation || !activeButton) return;
+
+    const navigationBounds = navigation.getBoundingClientRect();
+    const buttonBounds = activeButton.getBoundingClientRect();
+    const padding = 8;
+
+    const isClippedLeft =
+      buttonBounds.left < navigationBounds.left + padding;
+
+    const isClippedRight =
+      buttonBounds.right > navigationBounds.right - padding;
+
+    if (!isClippedLeft && !isClippedRight) return;
+
+    const offset = isClippedLeft
+      ? buttonBounds.left - navigationBounds.left - padding
+      : buttonBounds.right - navigationBounds.right + padding;
+
+    const prefersReducedMotion = window.matchMedia(
+      '(prefers-reduced-motion: reduce)',
+    ).matches;
+
+    navigation.scrollTo({
+      left: navigation.scrollLeft + offset,
+      behavior: prefersReducedMotion ? 'auto' : 'smooth',
+    });
+  }, [activeTab]);
+
+  const utilityActions: readonly UtilityAction[] = [
+    {
+      id: 'workspaces',
+      label: isSignedIn ? 'Saved Benches' : 'Save Bench',
+      description: 'Save or load bench workspaces and diagnostic logs',
+      icon: Save,
+      tone: 'emerald',
+      onClick: onOpenCloudModal,
+    },
+    {
+      id: 'reports',
+      label: 'Google Docs',
+      description: 'Export bench reports and manage Google Docs',
+      icon: FileText,
+      tone: 'blue',
+      onClick: onOpenDocsModal,
+    },
+    {
+      id: 'assistant',
+      label: 'Offline Bot',
+      description: 'Open the offline diagnostic assistant',
+      icon: Bot,
+      tone: 'amber',
+      onClick: onOpenOfflineBot,
+    },
+    {
+      id: 'search',
+      label: 'Live Search',
+      description: 'Search OEM bulletins, service information, and pinouts',
+      icon: Globe,
+      tone: 'cyan',
+      onClick: onOpenGroundedSearch,
+    },
+    {
+      id: 'guide',
+      label: 'Guide & Credits',
+      description: 'View lab instructions and credits',
+      icon: HelpCircle,
+      tone: 'neutral',
+      onClick: onOpenIntroModal,
+    },
+    {
+      id: 'reset',
+      label: 'Reset Bench',
+      description: 'Reset the bench to its factory setup',
+      icon: RotateCcw,
+      tone: 'neutral',
+      onClick: onResetLab,
+    },
+  ];
+
   return (
-    <header className="hud-header px-2.5 sm:px-5 py-1.5 lg:py-0 lg:h-13 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-1.5 lg:gap-4 text-xs shrink-0">
-      {/* Top Row on Mobile / Brand Zone on Desktop */}
-      <div className="flex items-center justify-between gap-2 w-full lg:w-auto min-w-0">
-        <div className="flex items-center gap-2 shrink-0">
+    <header className="relative isolate w-full min-w-0 shrink-0 border-b border-white/10 bg-slate-950 text-slate-200">
+      {/* Decorative accent */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/60 to-transparent"
+      />
+
+      {/* Brand, telemetry, and tools */}
+      <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2 px-3 py-3 sm:px-5">
+        <div className="flex min-w-0 shrink-0 items-center gap-3">
           <img
-            src="/assets/aistudio/file_0000000098d48211abb177ce752b7b0e_62980da7.png"
-            alt="AutoElectric Lab Pro"
+            src={BRAND_IMAGE}
+            alt=""
+            width={36}
+            height={36}
+            decoding="async"
             referrerPolicy="no-referrer"
-            className="h-6 sm:h-8 w-auto object-contain rounded-md border border-cyan-500/40"
+            className="h-9 w-9 shrink-0 rounded-lg border border-cyan-400/25 bg-slate-900 object-contain p-0.5"
           />
-          <span className="font-hud font-bold tracking-wide text-xs sm:text-base whitespace-nowrap shrink-0">
-            <span className="brand-wordmark-silver">AutoElectric Lab</span>{' '}
-            <span className="brand-wordmark-amber">Pro</span>
-          </span>
+
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 whitespace-nowrap">
+              <span className="font-hud text-sm font-bold tracking-wide text-slate-100 sm:text-base">
+                AutoElectric Lab
+              </span>
+
+              <span className="rounded border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-widest text-amber-300">
+                Pro
+              </span>
+            </div>
+
+            <p className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500">
+              Virtual ECU Workbench
+            </p>
+          </div>
         </div>
 
-        {/* Mobile/Tablet Utility Actions Strip */}
-        <div className="flex lg:hidden items-center gap-1 overflow-x-auto scrollbar-none font-mono pl-1">
-          <div className="flex items-center hud-well px-1.5 py-0.5 rounded-md text-[10px] shrink-0">
-            <select
-              aria-label="Simulation Speed Mobile"
-              value={simulationSpeed}
-              onChange={(e) => onChangeSimulationSpeed(parseFloat(e.target.value))}
-              className="bg-transparent text-cyan-300 font-bold rounded py-0.5 text-[10px] focus:outline-none cursor-pointer"
-            >
-              <option value="0.25" className="bg-slate-950">0.25x</option>
-              <option value="0.5" className="bg-slate-950">0.5x</option>
-              <option value="1.0" className="bg-slate-950">1.0x</option>
-              <option value="2.0" className="bg-slate-950">2.0x</option>
-              <option value="4.0" className="bg-slate-950">4.0x</option>
-            </select>
-          </div>
+        <BenchTelemetry circuitSolution={circuitSolution} />
 
-          <button
-            type="button"
-            onClick={onOpenCloudModal}
-            className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold text-emerald-300 bg-emerald-950/60 border border-emerald-700/60 rounded-md whitespace-nowrap shrink-0"
-            title="Save or Load Bench Workspaces"
-            aria-label="Save or Load Bench Workspaces"
-          >
-            <Save className="w-3 h-3 text-emerald-400" />
-            <span className="hidden sm:inline">Saved</span>
-          </button>
+        <div
+          role="group"
+          aria-label="Simulation and workspace tools"
+          className="flex w-full min-w-0 items-center gap-2 overflow-x-auto scrollbar-none px-1 py-1 md:ml-auto md:w-auto md:flex-1 md:justify-end"
+        >
+          <SimulationSpeedSelect
+            value={simulationSpeed}
+            onChange={onChangeSimulationSpeed}
+          />
 
-          <button
-            type="button"
-            onClick={onOpenDocsModal}
-            className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold text-blue-200 bg-blue-950/70 border border-blue-600/60 rounded-md whitespace-nowrap shrink-0"
-            title="Google Docs Reports"
-            aria-label="Google Docs Reports"
-          >
-            <FileText className="w-3 h-3 text-blue-400" />
-            <span className="hidden sm:inline">Docs</span>
-          </button>
+          <span
+            aria-hidden="true"
+            className="mx-0.5 h-6 w-px shrink-0 bg-white/10"
+          />
 
-          <button
-            type="button"
-            onClick={onOpenOfflineBot}
-            className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold text-amber-200 bg-amber-950/70 border border-amber-500/50 rounded-md whitespace-nowrap shrink-0"
-            title="Offline Diagnostic Bot"
-            aria-label="Offline Diagnostic Bot"
-          >
-            <Bot className="w-3 h-3 text-amber-400" />
-            <span className="hidden sm:inline">Bot</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onOpenGroundedSearch}
-            className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold text-slate-950 bg-cyan-400 rounded-md whitespace-nowrap shrink-0"
-            title="Google Search Grounding"
-            aria-label="Google Search Grounding"
-          >
-            <Globe className="w-3 h-3" />
-          </button>
-
-          <button
-            type="button"
-            onClick={onOpenIntroModal}
-            className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold text-cyan-300 bg-slate-900/80 border border-cyan-500/30 rounded-md whitespace-nowrap shrink-0"
-            title="Guide & Credits"
-            aria-label="Guide and Credits"
-          >
-            <HelpCircle className="w-3 h-3 text-cyan-400" />
-          </button>
-
-          <button
-            type="button"
-            onClick={onResetLab}
-            className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-slate-200 bg-slate-900/80 border border-slate-700 rounded-md whitespace-nowrap shrink-0"
-            title="Reset Bench"
-            aria-label="Reset Bench"
-          >
-            <RotateCcw className="w-3 h-3" />
-          </button>
+          {utilityActions.map((action) => (
+            <UtilityButton key={action.id} action={action} />
+          ))}
         </div>
       </div>
 
-      {/* Unified Navigation Tabs */}
-      <nav
-        aria-label="Virtual ECU Lab Sections"
-        className="flex items-center gap-1 hud-well p-1 rounded-lg overflow-x-auto scrollbar-none w-full lg:w-auto shrink-0"
-      >
-        {NAV_TABS.map((tab) => {
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => onSelectTab(tab.id)}
-              aria-current={isActive ? 'page' : undefined}
-              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 text-[11px] sm:text-xs font-hud font-bold tracking-wide uppercase rounded-md whitespace-nowrap shrink-0 transition flex items-center gap-1 ${
-                isActive
-                  ? 'bg-cyan-500 text-slate-950 shadow-sm'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
-              }`}
-            >
-              {tab.icon === 'box' && <Box className="w-3.5 h-3.5" />}
-              {tab.icon === 'book' && <BookOpen className="w-3.5 h-3.5" />}
-              <span>{tab.label}</span>
-            </button>
-          );
-        })}
-      </nav>
-
-      {/* Desktop Telemetry & Utility Actions */}
-      <div className="hidden lg:flex items-center gap-1.5 sm:gap-2 shrink-0 font-mono">
-        <div className="hidden 2xl:flex items-center gap-2 text-[11px] text-slate-400 mr-1">
-          <span>DRAW:</span>
-          <span className="text-amber-400 font-bold tabular-nums">
-            {circuitSolution.supplyCurrentDrawAmps.toFixed(2)} A
-          </span>
-          <span className="text-slate-700">·</span>
-          {circuitSolution.activeDTCs.length > 0 ? (
-            <span className="text-rose-400 font-bold flex items-center gap-1 whitespace-nowrap">
-              <AlertTriangle className="w-3.5 h-3.5" /> {circuitSolution.activeDTCs.length} FAULT
-            </span>
-          ) : (
-            <span className="text-emerald-400 font-bold flex items-center gap-1 whitespace-nowrap">
-              <CheckCircle2 className="w-3.5 h-3.5" /> NOMINAL
-            </span>
-          )}
-        </div>
-
-        <div className="flex items-center gap-1.5 hud-well px-2 py-1 rounded-lg text-xs shrink-0">
-          <span className="text-[10px] text-slate-400 font-bold whitespace-nowrap hidden xl:inline">
-            SPEED:
-          </span>
-          <select
-            aria-label="Simulation Speed"
-            value={simulationSpeed}
-            onChange={(e) => onChangeSimulationSpeed(parseFloat(e.target.value))}
-            className="bg-transparent text-cyan-300 font-bold rounded px-1 py-0.5 text-[11px] focus:outline-none cursor-pointer"
-          >
-            <option value="0.25" className="bg-slate-950">0.25x Slow-Mo</option>
-            <option value="0.5" className="bg-slate-950">0.5x Slow</option>
-            <option value="1.0" className="bg-slate-950">1.0x Realtime</option>
-            <option value="2.0" className="bg-slate-950">2.0x Fast</option>
-            <option value="4.0" className="bg-slate-950">4.0x Turbo</option>
-          </select>
-        </div>
-
-        <button
-          type="button"
-          onClick={onOpenCloudModal}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-300 bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-700/60 rounded-lg transition whitespace-nowrap shrink-0"
-          title="Save or Load Bench Workspaces & Diagnostic Logs"
+      {/* Section navigation */}
+      <div className="min-w-0 border-t border-white/5 bg-slate-900/40 px-3 sm:px-5">
+        <nav
+          ref={navigationRef}
+          aria-label="Virtual ECU lab sections"
+          className="flex min-w-0 items-center gap-1 overflow-x-auto scrollbar-none overscroll-x-contain px-1 py-2"
         >
-          <Save className="w-3.5 h-3.5 text-emerald-400" />
-          <span className="hidden xl:inline">{isSignedIn ? 'Saved Benches' : 'Save Bench'}</span>
-        </button>
+          {NAV_TABS.map((tab) => {
+            const isActive = activeTab === tab.id;
+            const Icon = tab.icon;
 
-        <button
-          type="button"
-          onClick={onOpenDocsModal}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-blue-200 bg-blue-950/70 hover:bg-blue-900/70 border border-blue-600/60 rounded-lg transition whitespace-nowrap shrink-0"
-          title="Export MNA Bench Reports & Manage Google Docs"
-        >
-          <FileText className="w-3.5 h-3.5 text-blue-400" />
-          <span className="hidden xl:inline">Google Docs</span>
-        </button>
+            return (
+              <button
+                key={tab.id}
+                ref={isActive ? activeButtonRef : undefined}
+                type="button"
+                onClick={() => onSelectTab(tab.id)}
+                aria-current={isActive ? 'page' : undefined}
+                className={[
+                  'relative inline-flex min-h-10 shrink-0 items-center',
+                  'justify-center gap-2 whitespace-nowrap rounded-lg',
+                  'border px-3.5 py-2',
+                  'font-hud text-[11px] font-bold uppercase tracking-wide',
+                  'transition-colors motion-reduce:transition-none',
+                  FOCUS_STYLES,
+                  isActive
+                    ? 'border-cyan-300/60 bg-cyan-400 text-slate-950 shadow-sm'
+                    : 'border-transparent text-slate-400 hover:border-white/10 hover:bg-white/5 hover:text-slate-100',
+                ].join(' ')}
+              >
+                {Icon && (
+                  <Icon
+                    aria-hidden="true"
+                    className="h-4 w-4 shrink-0"
+                    strokeWidth={1.8}
+                  />
+                )}
 
-        <button
-          type="button"
-          onClick={onOpenOfflineBot}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-amber-200 bg-amber-950/70 hover:bg-amber-900/80 border border-amber-500/50 rounded-lg transition whitespace-nowrap shrink-0"
-          title="100% Offline Diagnostic Assistant (MiniSearch Local Engine)"
-        >
-          <Bot className="w-3.5 h-3.5 text-amber-400" />
-          <span className="hidden xl:inline">Offline Bot</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={onOpenGroundedSearch}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-slate-950 bg-cyan-400 hover:bg-cyan-300 rounded-lg transition whitespace-nowrap shrink-0"
-          title="Search Live OEM Bulletins, TSBs & Pinouts with Google Search Grounding"
-        >
-          <Globe className="w-3.5 h-3.5" />
-          <span className="hidden xl:inline">Google Grounding</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={onOpenIntroModal}
-          className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-300 bg-slate-900/80 hover:bg-slate-800 border border-cyan-500/30 rounded-lg transition whitespace-nowrap shrink-0"
-          title="View Instructions & Executive Credentials"
-        >
-          <HelpCircle className="w-3.5 h-3.5 text-cyan-400" />
-          <span className="hidden 2xl:inline">Guide & Credits</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={onResetLab}
-          className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-slate-200 bg-slate-900/80 hover:bg-slate-800 border border-slate-700 rounded-lg transition whitespace-nowrap shrink-0"
-          title="Reset Bench to Factory Setup"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          <span className="hidden 2xl:inline">Reset</span>
-        </button>
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </nav>
       </div>
     </header>
   );

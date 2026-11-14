@@ -307,6 +307,165 @@ function testOscilloscopeSignals() {
   // Phase 3: Quiescent VBat (12.6V)
   const injQuiescent = SignalGenerator.getInjectorWaveform(0.010, false, 12.6);
   assertCloseTo('Injector Quiescent Battery Voltage (12.6V)', 'Oscilloscope Engine', injQuiescent, 12.6, 0.1);
+
+  // 6.3: Dual-Trace CAN_H vs CAN_L Anti-Phase Correlation (-1.0 / 180 deg)
+  const dualCan = SignalGenerator.sampleDualPinWaveformSeries({
+    ch1PinId: 'ecu-pin-13',
+    ch1PinLabel: 'CAN_H',
+    ch1MnaVoltage: 2.5,
+    ch2PinId: 'ecu-pin-14',
+    ch2PinLabel: 'CAN_L',
+    ch2MnaVoltage: 2.5,
+    isPowerOn: true,
+    hasCanFault: false,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 1200,
+    tStartSec: 0,
+    windowMs: 10,
+    sampleCount: 96,
+  });
+  assert(
+    'Dual-Trace CAN_H vs CAN_L Exhibits Anti-Phase (r <= -0.95, 180°)',
+    'Oscilloscope Engine',
+    dualCan.correlationMode === 'ANTI_PHASE' && dualCan.correlationR !== null && dualCan.correlationR <= -0.95 && dualCan.phaseDiffDeg === 180,
+    'ANTI_PHASE, r <= -0.95, 180°',
+    `${dualCan.correlationMode}, r=${dualCan.correlationR}, deg=${dualCan.phaseDiffDeg}`
+  );
+
+  // 6.4: Dual-Trace INJ_1 vs IGN_1 Phase Lag
+  const dualTiming = SignalGenerator.sampleDualPinWaveformSeries({
+    ch1PinId: 'ecu-pin-10',
+    ch1PinLabel: 'INJ_1',
+    ch1MnaVoltage: 12.6,
+    ch2PinId: 'ecu-pin-11',
+    ch2PinLabel: 'IGN_1',
+    ch2MnaVoltage: 0.0,
+    isPowerOn: true,
+    hasCanFault: false,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 1200,
+    tStartSec: 0,
+    windowMs: 50,
+    sampleCount: 128,
+  });
+  assert(
+    'Dual-Trace INJ_1 vs IGN_1 Captures Both Waveforms & Non-Zero Phase/Lag',
+    'Oscilloscope Engine',
+    dualTiming.ch1Stats.vpp > 40 && dualTiming.ch2Stats.vpp >= 4.9 && dualTiming.timeLagMs !== null && dualTiming.timeLagMs !== 0,
+    'Vpp1>40V, Vpp2>=4.9V, non-zero lag',
+    `Vpp1=${dualTiming.ch1Stats.vpp}, Vpp2=${dualTiming.ch2Stats.vpp}, lag=${dualTiming.timeLagMs}ms`
+  );
+
+  // 6.5: Dual-Trace KL30 vs KL15 In-Phase Ripple
+  const dualPower = SignalGenerator.sampleDualPinWaveformSeries({
+    ch1PinId: 'ecu-pin-3',
+    ch1PinLabel: 'KL30',
+    ch1MnaVoltage: 12.6,
+    ch2PinId: 'ecu-pin-4',
+    ch2PinLabel: 'KL15',
+    ch2MnaVoltage: 12.6,
+    isPowerOn: true,
+    hasCanFault: false,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 1200,
+    tStartSec: 0,
+    windowMs: 40,
+    sampleCount: 96,
+  });
+  assert(
+    'Dual-Trace KL30 vs KL15 In-Phase Supply Ripple (r >= 0.99, 0°)',
+    'Oscilloscope Engine',
+    dualPower.correlationMode === 'IN_PHASE' && dualPower.correlationR !== null && dualPower.correlationR >= 0.99 && dualPower.phaseDiffDeg === 0,
+    'IN_PHASE, r >= 0.99, 0°',
+    `${dualPower.correlationMode}, r=${dualPower.correlationR}, deg=${dualPower.phaseDiffDeg}`
+  );
+
+  // 6.6: Dual-Trace Short-to-GND Fault Collapses Correlation to DC_STATIC
+  const dualFaulted = SignalGenerator.sampleDualPinWaveformSeries({
+    ch1PinId: 'ecu-pin-7',
+    ch1PinLabel: 'TPS_SIG',
+    ch1MnaVoltage: 0.0,
+    ch1FaultType: 'SHORT_TO_GND',
+    ch2PinId: 'ecu-pin-8',
+    ch2PinLabel: 'MAP_SIG',
+    ch2MnaVoltage: 1.6,
+    isPowerOn: true,
+    hasCanFault: false,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 1200,
+    tStartSec: 0,
+    windowMs: 10,
+    sampleCount: 96,
+  });
+  assert(
+    'Dual-Trace Faulted Pin Collapses Correlation to DC_STATIC',
+    'Oscilloscope Engine',
+    dualFaulted.correlationMode === 'DC_STATIC' && dualFaulted.correlationR === null && dualFaulted.avgDiffV === -1.6,
+    'DC_STATIC, r=null, avgDiffV=-1.6',
+    `${dualFaulted.correlationMode}, r=${dualFaulted.correlationR}, avgDiffV=${dualFaulted.avgDiffV}`
+  );
+
+  // 6.7: Auto-Scale Normalization Across Asymmetric Amplitudes (INJ_1 ~65V vs IGN_1 ~5V)
+  const ch1NormsTiming = dualTiming.samples.map((s) => s.ch1Norm);
+  const ch2NormsTiming = dualTiming.samples.map((s) => s.ch2Norm);
+  const ch1NormMin = Math.min(...ch1NormsTiming);
+  const ch1NormMax = Math.max(...ch1NormsTiming);
+  const ch2NormMin = Math.min(...ch2NormsTiming);
+  const ch2NormMax = Math.max(...ch2NormsTiming);
+  assert(
+    'Auto-Scale Normalizes Asymmetric INJ_1 (~65V) & IGN_1 (~5V) Both to [0, 100]% While Preserving Raw Vpp',
+    'Oscilloscope Engine',
+    ch1NormMin === 0 &&
+      ch1NormMax === 100 &&
+      ch2NormMin === 0 &&
+      ch2NormMax === 100 &&
+      dualTiming.autoScale.ch1SpanV > 40 &&
+      dualTiming.autoScale.ch2SpanV >= 4.9 &&
+      dualTiming.autoScale.amplitudeRatio !== null &&
+      dualTiming.autoScale.amplitudeRatio > 5,
+    'Both 0–100%, raw spans >40V & >=4.9V, ratio > 5×',
+    `CH1=[${ch1NormMin},${ch1NormMax}]% (${dualTiming.autoScale.ch1SpanV}V), CH2=[${ch2NormMin},${ch2NormMax}]% (${dualTiming.autoScale.ch2SpanV}V), ratio=${dualTiming.autoScale.amplitudeRatio}x`
+  );
+
+  // 6.8: Auto-Scale Gracefully Handles Flat/Faulted DC Channel at 50% Midpoint Without NaN
+  const dualFlatVsO2 = SignalGenerator.sampleDualPinWaveformSeries({
+    ch1PinId: 'ecu-pin-7',
+    ch1PinLabel: 'TPS_SIG',
+    ch1MnaVoltage: 0.0,
+    ch1FaultType: 'SHORT_TO_GND',
+    ch2PinId: 'ecu-pin-15',
+    ch2PinLabel: 'O2_SIG',
+    ch2MnaVoltage: 0.45,
+    isPowerOn: true,
+    hasCanFault: false,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 1200,
+    tStartSec: 0,
+    windowMs: 800,
+    sampleCount: 96,
+  });
+  const flatCh1AllMid = dualFlatVsO2.samples.every(
+    (s) => Number.isFinite(s.ch1Norm) && s.ch1Norm === 50.0 && Number.isFinite(s.ch2Norm) && Number.isFinite(s.diffNorm)
+  );
+  const o2MinNorm = Math.min(...dualFlatVsO2.samples.map((s) => s.ch2Norm));
+  const o2MaxNorm = Math.max(...dualFlatVsO2.samples.map((s) => s.ch2Norm));
+  assert(
+    'Auto-Scale Maps Flat Short-to-GND Channel to 50% Midpoint & Active O2_SIG to [0, 100]%',
+    'Oscilloscope Engine',
+    flatCh1AllMid &&
+      dualFlatVsO2.autoScale.ch1IsFlat === true &&
+      dualFlatVsO2.autoScale.ch2IsFlat === false &&
+      dualFlatVsO2.autoScale.amplitudeRatio === null &&
+      o2MinNorm === 0 &&
+      o2MaxNorm === 100,
+    'CH1 flat=true @ 50%, CH2=[0, 100]%, ratio=null',
+    `flatCh1AllMid=${flatCh1AllMid}, ch1IsFlat=${dualFlatVsO2.autoScale.ch1IsFlat}, o2Norm=[${o2MinNorm},${o2MaxNorm}]%, ratio=${dualFlatVsO2.autoScale.amplitudeRatio}`
+  );
 }
 
 // ==========================================

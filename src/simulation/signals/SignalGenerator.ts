@@ -194,13 +194,31 @@ export class SignalGenerator {
           secondaryVoltage = Math.max(0, canSig.canHigh + mnaOffset);
         }
       } else if (signalKind === 'INJECTOR_PWM') {
-        voltage = isInjectorFiring
-          ? SignalGenerator.getInjectorWaveform(t, hasInjectorFault, mnaNodeVoltage, safeRpm)
-          : mnaNodeVoltage;
+        if (!isInjectorFiring) {
+          voltage = mnaNodeVoltage;
+        } else if (dt > 0.00012) {
+          // DSO Peak-Detect acquisition so narrow 0.4ms inductive flyback spikes are preserved across wide timebases
+          const subSteps = 12;
+          let peakSample = SignalGenerator.getInjectorWaveform(t, hasInjectorFault, mnaNodeVoltage, safeRpm);
+          let bestDistFromBaseline = Math.abs(peakSample - mnaNodeVoltage);
+          for (let s = 1; s < subSteps; s++) {
+            const subT = t + (s / subSteps) * dt;
+            const subV = SignalGenerator.getInjectorWaveform(subT, hasInjectorFault, mnaNodeVoltage, safeRpm);
+            const dist = Math.abs(subV - mnaNodeVoltage);
+            if (dist > bestDistFromBaseline) {
+              bestDistFromBaseline = dist;
+              peakSample = subV;
+            }
+          }
+          voltage = peakSample;
+        } else {
+          voltage = SignalGenerator.getInjectorWaveform(t, hasInjectorFault, mnaNodeVoltage, safeRpm);
+        }
       } else if (signalKind === 'IGNITION_TRIGGER') {
         const firingHz = Math.max(4, safeRpm / 60.0);
         const period = 1.0 / firingHz;
-        const phase = t % period;
+        // Compression-TDC ignition dwell occurs ~135° (0.375 cycle) after intake injection pulse
+        const phase = (t + period * 0.625) % period;
         // 3.0ms 5V logic ignition dwell trigger per firing cycle
         voltage = phase < 0.003 ? 5.0 : Math.max(0, mnaNodeVoltage);
       } else if (signalKind === 'O2_LAMBDA') {
@@ -210,7 +228,12 @@ export class SignalGenerator {
       } else {
         // Steady MNA node voltage (KL30, KL15, VREF_5V, TPS_SIG, MAP_SIG, ECT_SIG, GND, Relays)
         // Add subtle physical ripple proportional to alternator/switching only on active 12V rails when running
-        const hasRailRipple = (pinId === 'ecu-pin-3' || pinId === 'ecu-pin-4') && isInjectorFiring;
+        const hasRailRipple =
+          (pinId === 'ecu-pin-3' ||
+            pinId === 'ecu-pin-4' ||
+            pinId === 'ecu-pin-12' ||
+            pinId === 'ecu-pin-16') &&
+          isInjectorFiring;
         const ripple = hasRailRipple ? 0.03 * Math.sin(t * 2 * Math.PI * Math.max(20, (safeRpm / 60) * 3)) : 0;
         voltage = mnaNodeVoltage + ripple;
       }
@@ -242,6 +265,295 @@ export class SignalGenerator {
       vAvg: sum / Math.max(1, samples.length),
       vpp: Math.max(0, vMax - vMin),
       freqHz,
+    };
+  }
+
+  /**
+   * Samples two ECU connector pins simultaneously on a synchronized timebase, computing
+   * instantaneous differential voltage (`ch1 - ch2`), Pearson correlation (`r`), cross-correlation
+   * time lag (`Δt` ms), and phase difference (`Δφ` deg) for dual-trace analysis.
+   */
+  public static sampleDualPinWaveformSeries(params: {
+    ch1PinId: string;
+    ch1PinLabel: string;
+    ch1MnaVoltage: number;
+    ch1FaultType?: string;
+    ch2PinId: string;
+    ch2PinLabel: string;
+    ch2MnaVoltage: number;
+    ch2FaultType?: string;
+    isPowerOn: boolean;
+    hasCanFault: boolean;
+    hasInjectorFault: boolean;
+    isInjectorFiring: boolean;
+    rpm: number;
+    tStartSec: number;
+    windowMs?: number;
+    sampleCount?: number;
+  }): {
+    samples: Array<{
+      timeMs: number;
+      ch1: number;
+      ch2: number;
+      diff: number;
+      ch1Norm: number;
+      ch2Norm: number;
+      diffNorm: number;
+    }>;
+    ch1Label: string;
+    ch2Label: string;
+    ch1Stats: {
+      vMin: number;
+      vMax: number;
+      vAvg: number;
+      vpp: number;
+      freqHz: number;
+      signalKind: string;
+    };
+    ch2Stats: {
+      vMin: number;
+      vMax: number;
+      vAvg: number;
+      vpp: number;
+      freqHz: number;
+      signalKind: string;
+    };
+    autoScale: {
+      ch1MinV: number;
+      ch1MaxV: number;
+      ch1SpanV: number;
+      ch2MinV: number;
+      ch2MaxV: number;
+      ch2SpanV: number;
+      ch1IsFlat: boolean;
+      ch2IsFlat: boolean;
+      ch1MnaNorm: number;
+      amplitudeRatio: number | null;
+    };
+    correlationR: number | null;
+    phaseDiffDeg: number | null;
+    timeLagMs: number | null;
+    avgDiffV: number;
+    correlationMode: 'ANTI_PHASE' | 'IN_PHASE' | 'PHASE_SHIFTED' | 'UNCORRELATED' | 'DC_STATIC';
+  } {
+    const windowMs = params.windowMs ?? 40;
+    const sampleCount = params.sampleCount ?? 96;
+
+    const s1 = SignalGenerator.samplePinWaveformSeries({
+      pinId: params.ch1PinId,
+      pinLabel: params.ch1PinLabel,
+      mnaNodeVoltage: params.ch1MnaVoltage,
+      faultType: params.ch1FaultType ?? 'NONE',
+      isPowerOn: params.isPowerOn,
+      hasCanFault: params.hasCanFault,
+      hasInjectorFault: params.hasInjectorFault,
+      isInjectorFiring: params.isInjectorFiring,
+      rpm: params.rpm,
+      tStartSec: params.tStartSec,
+      windowMs,
+      sampleCount,
+    });
+
+    const s2 = SignalGenerator.samplePinWaveformSeries({
+      pinId: params.ch2PinId,
+      pinLabel: params.ch2PinLabel,
+      mnaNodeVoltage: params.ch2MnaVoltage,
+      faultType: params.ch2FaultType ?? 'NONE',
+      isPowerOn: params.isPowerOn,
+      hasCanFault: params.hasCanFault,
+      hasInjectorFault: params.hasInjectorFault,
+      isInjectorFiring: params.isInjectorFiring,
+      rpm: params.rpm,
+      tStartSec: params.tStartSec,
+      windowMs,
+      sampleCount,
+    });
+
+    const FLAT_EPS = 1e-3; // 1 mV threshold to distinguish flat DC from active AC/PWM waveforms
+    const clampPct = (pct: number): number => {
+      if (!Number.isFinite(pct)) return 50.0;
+      return Number(Math.max(0, Math.min(100, pct)).toFixed(2));
+    };
+
+    const ch1IsFlat = s1.vpp <= FLAT_EPS;
+    const ch2IsFlat = s2.vpp <= FLAT_EPS;
+
+    const n = Math.min(s1.samples.length, s2.samples.length);
+    const rawSamples: Array<{ timeMs: number; ch1: number; ch2: number; diff: number }> = [];
+    const a: number[] = new Array(n);
+    const b: number[] = new Array(n);
+
+    let sumA2 = 0;
+    let sumB2 = 0;
+    let sumAB = 0;
+    let diffMin = Infinity;
+    let diffMax = -Infinity;
+
+    for (let i = 0; i < n; i++) {
+      const v1 = s1.samples[i].voltage;
+      const v2 = s2.samples[i].voltage;
+      const diff = Number((v1 - v2).toFixed(3));
+      if (diff < diffMin) diffMin = diff;
+      if (diff > diffMax) diffMax = diff;
+
+      rawSamples.push({
+        timeMs: s1.samples[i].timeMs,
+        ch1: v1,
+        ch2: v2,
+        diff,
+      });
+      const da = v1 - s1.vAvg;
+      const db = v2 - s2.vAvg;
+      a[i] = da;
+      b[i] = db;
+      sumA2 += da * da;
+      sumB2 += db * db;
+      sumAB += da * db;
+    }
+
+    if (!Number.isFinite(diffMin)) diffMin = 0;
+    if (!Number.isFinite(diffMax)) diffMax = 0;
+    const diffSpan = Math.max(0, diffMax - diffMin);
+    const diffIsFlat = diffSpan <= FLAT_EPS;
+
+    const samples = rawSamples.map((pt) => ({
+      ...pt,
+      ch1Norm: ch1IsFlat ? 50.0 : clampPct(((pt.ch1 - s1.vMin) / s1.vpp) * 100),
+      ch2Norm: ch2IsFlat ? 50.0 : clampPct(((pt.ch2 - s2.vMin) / s2.vpp) * 100),
+      diffNorm: diffIsFlat ? 50.0 : clampPct(((pt.diff - diffMin) / diffSpan) * 100),
+    }));
+
+    const ch1MnaNorm = ch1IsFlat
+      ? 50.0
+      : clampPct(((params.ch1MnaVoltage - s1.vMin) / s1.vpp) * 100);
+
+    const amplitudeRatio =
+      !ch1IsFlat && !ch2IsFlat
+        ? Number((Math.max(s1.vpp, s2.vpp) / Math.min(s1.vpp, s2.vpp)).toFixed(2))
+        : null;
+
+    const avgDiffV = Number((s1.vAvg - s2.vAvg).toFixed(3));
+    const denom = Math.sqrt(sumA2 * sumB2);
+
+    let correlationR: number | null = null;
+    let phaseDiffDeg: number | null = null;
+    let timeLagMs: number | null = null;
+    let correlationMode: 'ANTI_PHASE' | 'IN_PHASE' | 'PHASE_SHIFTED' | 'UNCORRELATED' | 'DC_STATIC' =
+      'DC_STATIC';
+
+    if (denom > 1e-4 && n >= 8) {
+      const rawR = Math.max(-1, Math.min(1, sumAB / denom));
+      correlationR = Number(rawR.toFixed(3));
+
+      if (rawR <= -0.85) {
+        phaseDiffDeg = 180.0;
+        timeLagMs = 0.0;
+        correlationMode = 'ANTI_PHASE';
+      } else {
+        const dtMs = windowMs / Math.max(1, n - 1);
+        const maxLag = Math.floor(n / 2);
+        let bestLag = 0;
+        let bestCorr = rawR;
+        let bestAbsLag = 0;
+        let bestAbsCorr = Math.abs(rawR);
+
+        for (let lag = -maxLag; lag <= maxLag; lag++) {
+          const iStart = Math.max(0, -lag);
+          const iEnd = Math.min(n, n - lag);
+          if (iEnd - iStart < Math.max(6, Math.floor(n / 3))) continue;
+
+          let lAB = 0;
+          let lA2 = 0;
+          let lB2 = 0;
+          for (let i = iStart; i < iEnd; i++) {
+            const va = a[i];
+            const vb = b[i + lag];
+            lAB += va * vb;
+            lA2 += va * va;
+            lB2 += vb * vb;
+          }
+          const lDen = Math.sqrt(lA2 * lB2);
+          if (lDen > 1e-5) {
+            const c = lAB / lDen;
+            if (c > bestCorr + 1e-4 || (Math.abs(c - bestCorr) <= 1e-4 && Math.abs(lag) < Math.abs(bestLag))) {
+              bestCorr = c;
+              bestLag = lag;
+            }
+            const absC = Math.abs(c);
+            if (absC > bestAbsCorr + 1e-4 || (Math.abs(absC - bestAbsCorr) <= 1e-4 && Math.abs(lag) < Math.abs(bestAbsLag))) {
+              bestAbsCorr = absC;
+              bestAbsLag = lag;
+            }
+          }
+        }
+
+        const refFreqHz =
+          s1.freqHz > 0 && s2.freqHz > 0
+            ? Math.min(s1.freqHz, s2.freqHz)
+            : s1.freqHz || s2.freqHz;
+
+        const chosenCorr = bestCorr >= 0.45 ? bestCorr : bestAbsCorr;
+        const chosenLag = bestCorr >= 0.45 ? bestLag : bestAbsLag;
+
+        if (rawR >= 0.88 && Math.abs(bestLag) <= 1) {
+          phaseDiffDeg = 0.0;
+          timeLagMs = 0.0;
+          correlationMode = 'IN_PHASE';
+        } else if (chosenCorr >= 0.45) {
+          timeLagMs = Number((chosenLag * dtMs).toFixed(2));
+          if (refFreqHz > 0 && refFreqHz < 10000) {
+            const periodMs = 1000 / refFreqHz;
+            const rawDeg = ((chosenLag * dtMs) / periodMs) * 360;
+            const wrapped = (((rawDeg % 360) + 540) % 360) - 180;
+            phaseDiffDeg = Number(wrapped.toFixed(1));
+          } else if (chosenLag === 0) {
+            phaseDiffDeg = 0.0;
+          }
+          correlationMode =
+            phaseDiffDeg !== null && Math.abs(phaseDiffDeg) < 10 ? 'IN_PHASE' : 'PHASE_SHIFTED';
+        } else {
+          correlationMode = 'UNCORRELATED';
+        }
+      }
+    }
+
+    return {
+      samples,
+      ch1Label: s1.primaryLabel,
+      ch2Label: s2.primaryLabel,
+      ch1Stats: {
+        vMin: s1.vMin,
+        vMax: s1.vMax,
+        vAvg: s1.vAvg,
+        vpp: s1.vpp,
+        freqHz: s1.freqHz,
+        signalKind: s1.signalKind,
+      },
+      ch2Stats: {
+        vMin: s2.vMin,
+        vMax: s2.vMax,
+        vAvg: s2.vAvg,
+        vpp: s2.vpp,
+        freqHz: s2.freqHz,
+        signalKind: s2.signalKind,
+      },
+      autoScale: {
+        ch1MinV: Number(s1.vMin.toFixed(3)),
+        ch1MaxV: Number(s1.vMax.toFixed(3)),
+        ch1SpanV: Number(s1.vpp.toFixed(3)),
+        ch2MinV: Number(s2.vMin.toFixed(3)),
+        ch2MaxV: Number(s2.vMax.toFixed(3)),
+        ch2SpanV: Number(s2.vpp.toFixed(3)),
+        ch1IsFlat,
+        ch2IsFlat,
+        ch1MnaNorm,
+        amplitudeRatio,
+      },
+      correlationR,
+      phaseDiffDeg,
+      timeLagMs,
+      avgDiffV,
+      correlationMode,
     };
   }
 }

@@ -1,6 +1,24 @@
-import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, Eye, GripHorizontal, Mic, Volume2, VolumeX } from 'lucide-react';
+import React, {
+  Component,
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
+  Activity,
+  AlertTriangle,
+  Eye,
+  GripHorizontal,
+  Mic,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
+import type {
   BenchComponent,
   EcuPin,
   FaultType,
@@ -8,382 +26,891 @@ import {
   MultimeterState,
   PowerSupplyState,
   WireConnection,
-} from '../types/ecu';
-import { CircuitSolution } from '../utils/circuitSolver';
-import { SavedBenchSession, SavedDiagnosticLog } from '../services/benchStorageService';
-import { playModuleActivationSound } from '../utils/audioFeedback';
-import { ECUDiagnosticView } from './ECUDiagnosticView';
+} from "../types/ecu";
+import type { CircuitSolution } from "../utils/circuitSolver";
+import type {
+  SavedBenchSession,
+  SavedDiagnosticLog,
+} from "../services/benchStorageService";
+import { playModuleActivationSound } from "../utils/audioFeedback";
+import { ECUDiagnosticView } from "./ECUDiagnosticView";
 import {
   FLOATING_OPACITY_LEVELS,
   FloatingLabNavigator,
-  FloatingOpacityLevel,
-} from './FloatingLabNavigator';
-import { InstrumentPanels } from './InstrumentPanels';
-import { LabTab, MobileBenchPane, RackFilter } from './LabTopNav';
-import { WiringCanvas } from './WiringCanvas';
+} from "./FloatingLabNavigator";
+import type { FloatingOpacityLevel } from "./FloatingLabNavigator";
+import { InstrumentPanels } from "./InstrumentPanels";
+import type { LabTab, MobileBenchPane, RackFilter } from "./LabTopNav";
+import { WiringCanvas } from "./WiringCanvas";
 import {
-  RpmEmulatorState,
   UNIVERSAL_BRAND_KEY,
   getSelectedVehicleContext,
-} from '../utils/vehicleEcuRegistry';
+} from "../utils/vehicleEcuRegistry";
+import type { RpmEmulatorState } from "../utils/vehicleEcuRegistry";
 
 const Oscilloscope = lazy(() =>
-  import('./Oscilloscope').then((m) => ({ default: m.Oscilloscope }))
+  import("./Oscilloscope").then((m) => ({ default: m.Oscilloscope })),
 );
 const PinWaveformOscilloscope = lazy(() =>
-  import('./PinWaveformOscilloscope').then((m) => ({ default: m.PinWaveformOscilloscope }))
+  import("./PinWaveformOscilloscope").then((m) => ({
+    default: m.PinWaveformOscilloscope,
+  })),
 );
 const SchematicPcbScanner = lazy(() =>
-  import('./SchematicPcbScanner').then((m) => ({ default: m.SchematicPcbScanner }))
+  import("./SchematicPcbScanner").then((m) => ({
+    default: m.SchematicPcbScanner,
+  })),
 );
 const EcuConnectorPinouts = lazy(() =>
-  import('./EcuConnectorPinouts').then((m) => ({ default: m.EcuConnectorPinouts }))
+  import("./EcuConnectorPinouts").then((m) => ({
+    default: m.EcuConnectorPinouts,
+  })),
 );
 const EcuRepairKnowledgeBase = lazy(() =>
-  import('./EcuRepairKnowledgeBase').then((m) => ({ default: m.EcuRepairKnowledgeBase }))
+  import("./EcuRepairKnowledgeBase").then((m) => ({
+    default: m.EcuRepairKnowledgeBase,
+  })),
 );
 const ThreeBenchTwin = lazy(() =>
-  import('./ThreeBenchTwin').then((m) => ({ default: m.ThreeBenchTwin }))
+  import("./ThreeBenchTwin").then((m) => ({ default: m.ThreeBenchTwin })),
 );
 
-/** Polarity identifier for virtual DMM test leads on the harness canvas and ECU pinout views. */
-export type ProbeColor = 'red' | 'black';
-
-/** Partial key-value state patch applied to interactive bench components (e.g., throttle angle, coolant temperature). */
+export type ProbeColor = "red" | "black";
 export type ComponentStateUpdates = Record<string, number | boolean | string>;
 
-/**
- * Navigation and responsive viewport state controlling which workbench modules are visible.
- */
+/** Public App.tsx contract: existing callers do not need new props. */
 export interface LabNavigationProps {
-  /** Active top-level workbench view tab (`BENCH_LAB`, `WIRING_DIAGRAM`, `THREE_D_TWIN`, etc.). */
   activeTab: LabTab;
-  /** Switches the active top-level workbench tab. */
   onNavigateTab: (tab: LabTab) => void;
-  /** Filter applied to the left instrument rack (`ALL`, `DMM_POWER`, or `FAULT_MATRIX`). */
   rackFilter: RackFilter;
-  /** Updates the active instrument rack filter tab. */
   onChangeRackFilter: (filter: RackFilter) => void;
-  /** Active pane rendered below `lg` viewports on `BENCH_LAB` (`INSTRUMENTS`, `CANVAS`, or `GUIDE`). */
   mobileBenchPane: MobileBenchPane;
-  /** Switches the visible pane in mobile/tablet viewports (`< lg`). */
   onChangeMobileBenchPane: (pane: MobileBenchPane) => void;
-  /** Controls visibility of the 5-step ECU Diagnostic Guide side panel on desktop viewports. */
   showDiagnosticGuide: boolean;
-  /** Opens or collapses the 5-step ECU Diagnostic Guide panel. */
   onSetShowDiagnosticGuide: (open: boolean) => void;
 }
-
-/**
- * Read-only MNA circuit state and controllable virtual instrument hardware props
- * passed down from the top-level simulation controller in `App.tsx`.
- */
 export interface LabSimulationProps {
-  /** Time-scale multiplier (`0.25` to `4.0`) for oscilloscope waveforms and animated signal pulses. */
   simulationSpeed: number;
-  /** Programmable DC bench power supply settings (voltage, current limit, output state, preset). */
   powerSupply: PowerSupplyState;
-  /** React state dispatcher updating `powerSupply` parameters. */
   onChangePowerSupply: React.Dispatch<React.SetStateAction<PowerSupplyState>>;
-  /** Virtual DMM mode, lead placement, power, auto-range, and hold state. */
   multimeter: MultimeterState;
-  /** React state dispatcher updating `multimeter` configuration. */
   onChangeMultimeter: React.Dispatch<React.SetStateAction<MultimeterState>>;
-  /** Deterministic MNA solver output (`nodeVoltages`, `wireCurrentsMa`, `multimeterReading`, `activeDTCs`, supply load). */
   circuitSolution: CircuitSolution;
-  /** Ordered array of 16 ECU connector pins (`EcuPin[]`) with nominal electrical parameters. */
   pins: EcuPin[];
-  /** Physical bench peripherals (`BenchComponent[]`: TPS, MAP, ECT, O2, Injector, Coil, CAN node, etc.). */
   components: BenchComponent[];
-  /** Active harness wires (`WireConnection[]`) linking ECU pins and bench component terminals. */
   wires: WireConnection[];
-  /** Currently injected electrical faults (`InjectedFault[]`) evaluated by the MNA network and OBD-II engine. */
   faults: InjectedFault[];
-  /** Currently inspected pin ID (`string | null`) synchronized across instruments, canvas, and diagnostic views. */
   selectedPinId: string | null;
-  /** Selects or clears the active pin focus across workbench panes. */
   onSelectPin: (pinId: string | null) => void;
-  /** True when a fault affects CAN_H or CAN_L communication lines (drives oscilloscope signal selection). */
   hasCanFault: boolean;
-  /** True when an open/short/resistance fault affects the primary injector driver circuit. */
   hasInjectorFault: boolean;
-  /** Selected vehicle brand key (`'universal-bench'`, `'toyota'`, `'honda'`, etc.) in the Bench Test panel. */
   selectedBrandKey?: string;
-  /** Selected vehicle model label (e.g., `'Vios'`, `'Civic'`, `'Fortuner'`) paired with the ECU bench. */
   selectedModelName?: string;
-  /** Selected OEM ECU profile ID matching `ECU_BRAND_PROFILES` or `null` for universal bench mode. */
   selectedEcuProfileId?: string | null;
-  /** Updates selected Car Make, Model, and OEM ECU profile while synchronizing bench pinout labels. */
-  onSelectVehicleEcu?: (brandKey: string, modelName: string, ecuProfileId: string | null) => void;
-  /** Live CKP/RPM emulator state (`isActive`, `rpm`, `soundEnabled`) driving audio synthesis and crank waveforms. */
+  onSelectVehicleEcu?: (
+    brandKey: string,
+    modelName: string,
+    ecuProfileId: string | null,
+  ) => void;
   rpmEmulator?: RpmEmulatorState;
-  /** React state dispatcher updating live RPM emulator speed, activation, and sound settings. */
   onChangeRpmEmulator?: React.Dispatch<React.SetStateAction<RpmEmulatorState>>;
 }
-
-/**
- * Fault injection and DTC lookup callbacks bridged from the Fault Matrix and OBD monitor.
- */
 export interface LabFaultCallbacks {
-  /** Injects an open, short-to-ground, short-to-VBAT, or series resistance fault onto a target pin. */
-  onAddFault: (pinId: string, faultType: FaultType, description: string) => void;
-  /** Clears an active injected fault from the specified pin. */
+  onAddFault: (
+    pinId: string,
+    faultType: FaultType,
+    description: string,
+  ) => void;
   onRemoveFault: (pinId: string) => void;
-  /** Restores all pins by removing every injected fault in one operation. */
   onClearAllFaults: () => void;
-  /** Opens grounded OEM search pre-populated with a diagnostic trouble code and description. */
   onSearchDtc: (code: string, desc: string) => void;
 }
-
-/**
- * Interactive harness wiring, probe routing, and component actuation callbacks.
- */
 export interface LabHarnessCallbacks {
-  /** Connects a new harness wire between two terminal IDs with optional sheath color hex and label. */
-  onAddWire: (sourcePinId: string, targetPinId: string, color?: string, label?: string) => void;
-  /** Toggles an open-circuit cut state on an existing harness wire. */
+  onAddWire: (
+    sourcePinId: string,
+    targetPinId: string,
+    color?: string,
+    label?: string,
+  ) => void;
   onToggleCutWire: (wireId: string) => void;
-  /** Removes a harness wire permanently from the active bench topology. */
   onDeleteWire: (wireId: string) => void;
-  /** Seats the red (`+`) or black (`COM`) virtual DMM probe onto a pin/terminal ID. */
   onAttachProbe: (color: ProbeColor, pinId: string, label: string) => void;
-  /** Updates interactive sensor/actuator parameters (e.g., TPS throttle %, coolant temp °C). */
-  onUpdateComponentState: (compId: string, updates: ComponentStateUpdates) => void;
+  onUpdateComponentState: (
+    compId: string,
+    updates: ComponentStateUpdates,
+  ) => void;
 }
-
-/**
- * Secondary modal and reference library launch callbacks owned by `App.tsx`.
- */
 export interface LabToolCallbacks {
-  /** Navigates directly to the interactive ECU Connector Pinout Library tab. */
   onOpenEcuPinouts: () => void;
-  /** Opens the local offline diagnostic assistant modal, optionally seeded with a prompt. */
   onOpenOfflineBot: (prompt?: string) => void;
-  /** Opens live web grounded OEM search modal with optional query, DTC code, and ECU model. */
   onOpenGroundedSearch: (query?: string, dtc?: string, ecu?: string) => void;
-  /** Opens the Saved Bench Workspaces & Diagnostic Logs cloud persistence modal. */
   onOpenCloudModal: () => void;
-  /** Optional lab reset callback used by the floating offline voice navigator. */
   onResetLab?: () => void;
 }
-
-/**
- * Persisted workspace snapshots and diagnostic logs retrieved from local/Firestore storage.
- */
 export interface LabCloudDataProps {
-  /** User-saved bench configurations (`SavedBenchSession[]`) available in the Repair Knowledge Base. */
   savedSessions: SavedBenchSession[];
-  /** Historical diagnostic logs (`SavedDiagnosticLog[]`) surfaced alongside live bench telemetry. */
   savedLogs: SavedDiagnosticLog[];
 }
-
-/**
- * Complete typed prop contract accepted by {@link LabWorkspaceLayout} from `App.tsx`.
- * Composes navigation state, deterministic MNA simulation telemetry, fault controls,
- * harness manipulation callbacks, modal launchers, and saved cloud datasets.
- */
 export interface LabWorkspaceLayoutProps
-  extends LabNavigationProps,
+  extends
+    LabNavigationProps,
     LabSimulationProps,
     LabFaultCallbacks,
     LabHarnessCallbacks,
     LabToolCallbacks,
     LabCloudDataProps {}
 
-const VALID_LAB_TABS: readonly LabTab[] = [
-  'BENCH_LAB',
-  'WIRING_DIAGRAM',
-  'THREE_D_TWIN',
-  'ECU_PINOUT',
-  'OSCILLOSCOPE',
-  'PCB_SCANNER',
-  'REPAIR_GUIDE',
-];
-
-const VALID_RACK_FILTERS: readonly RackFilter[] = ['ALL', 'DMM_POWER', 'FAULT_MATRIX'];
-const VALID_MOBILE_PANES: readonly MobileBenchPane[] = ['INSTRUMENTS', 'CANVAS', 'GUIDE'];
-const DEFAULT_PANE_ORDER: readonly MobileBenchPane[] = ['INSTRUMENTS', 'CANVAS', 'GUIDE'];
-
 export type WorkspaceLayoutTier =
-  | 'COMPACT_MOBILE'
-  | 'TABLET_SPLIT'
-  | 'COMPACT_DESKTOP'
-  | 'WIDE_DESKTOP';
+  | "COMPACT_MOBILE"
+  | "TABLET_SPLIT"
+  | "COMPACT_DESKTOP"
+  | "WIDE_DESKTOP";
 
-const REQUIRED_CALLBACK_KEYS: readonly (keyof LabWorkspaceLayoutProps)[] = [
-  'onNavigateTab',
-  'onChangeRackFilter',
-  'onChangeMobileBenchPane',
-  'onSetShowDiagnosticGuide',
-  'onChangePowerSupply',
-  'onChangeMultimeter',
-  'onSelectPin',
-  'onAddFault',
-  'onRemoveFault',
-  'onClearAllFaults',
-  'onSearchDtc',
-  'onAddWire',
-  'onToggleCutWire',
-  'onDeleteWire',
-  'onAttachProbe',
-  'onUpdateComponentState',
-  'onOpenEcuPinouts',
-  'onOpenOfflineBot',
-  'onOpenGroundedSearch',
-  'onOpenCloudModal',
+type Size = Readonly<{ width: number; height: number }>;
+type Point = Readonly<{ x: number; y: number }>;
+type ScopeMode = "CRT" | "RECHARTS_PIN";
+const VALID_LAB_TABS: readonly LabTab[] = [
+  "BENCH_LAB",
+  "WIRING_DIAGRAM",
+  "THREE_D_TWIN",
+  "ECU_PINOUT",
+  "OSCILLOSCOPE",
+  "PCB_SCANNER",
+  "REPAIR_GUIDE",
 ];
-
+const VALID_RACK_FILTERS: readonly RackFilter[] = [
+  "ALL",
+  "DMM_POWER",
+  "FAULT_MATRIX",
+];
+const DEFAULT_PANE_ORDER: readonly MobileBenchPane[] = [
+  "INSTRUMENTS",
+  "CANVAS",
+  "GUIDE",
+];
+const REQUIRED_CALLBACK_KEYS: readonly (keyof LabWorkspaceLayoutProps)[] = [
+  "onNavigateTab",
+  "onChangeRackFilter",
+  "onChangeMobileBenchPane",
+  "onSetShowDiagnosticGuide",
+  "onChangePowerSupply",
+  "onChangeMultimeter",
+  "onSelectPin",
+  "onAddFault",
+  "onRemoveFault",
+  "onClearAllFaults",
+  "onSearchDtc",
+  "onAddWire",
+  "onToggleCutWire",
+  "onDeleteWire",
+  "onAttachProbe",
+  "onUpdateComponentState",
+  "onOpenEcuPinouts",
+  "onOpenOfflineBot",
+  "onOpenGroundedSearch",
+  "onOpenCloudModal",
+];
+const OPTIONAL_CALLBACK_KEYS: readonly (keyof LabWorkspaceLayoutProps)[] = [
+  "onResetLab",
+  "onSelectVehicleEcu",
+  "onChangeRpmEmulator",
+];
+const PANEL_LABELS: Record<MobileBenchPane, string> = {
+  INSTRUMENTS: "Instruments",
+  CANVAS: "Harness Canvas",
+  GUIDE: "5-Step Guide",
+};
+const FAB_MARGIN = 8;
+const DRAG_THRESHOLD = 6;
+const LONG_PRESS_MS = 420;
+const EMPTY_SESSIONS: SavedBenchSession[] = [];
+const EMPTY_LOGS: SavedDiagnosticLog[] = [];
 const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
+  typeof value === "object" && value !== null && !Array.isArray(value);
 const isFiniteNumber = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isFinite(value);
+  typeof value === "number" && Number.isFinite(value);
+const isFiniteRecord = (value: unknown): value is Record<string, number> =>
+  isRecord(value) && Object.values(value).every(isFiniteNumber);
 
-/**
- * Validates all props passed to {@link LabWorkspaceLayout} at runtime.
- * Returns a list of human-readable contract violations (empty array when valid).
- */
-export function validateLabWorkspaceProps(
-  props: Partial<LabWorkspaceLayoutProps>
-): string[] {
+/** Checks the consumed hardware boundary; domain-specific nested schemas remain in their owners. */
+function getHardwareErrors(props: Partial<LabWorkspaceLayoutProps>): string[] {
   const errors: string[] = [];
-
-  if (!props.activeTab || !VALID_LAB_TABS.includes(props.activeTab)) {
-    errors.push(`Invalid "activeTab": received "${String(props.activeTab)}".`);
-  }
-  if (!props.rackFilter || !VALID_RACK_FILTERS.includes(props.rackFilter)) {
-    errors.push(`Invalid "rackFilter": received "${String(props.rackFilter)}".`);
-  }
-  if (!props.mobileBenchPane || !VALID_MOBILE_PANES.includes(props.mobileBenchPane)) {
-    errors.push(`Invalid "mobileBenchPane": received "${String(props.mobileBenchPane)}".`);
-  }
-
-  if (!isFiniteNumber(props.simulationSpeed) || props.simulationSpeed <= 0) {
-    errors.push(
-      `Invalid "simulationSpeed": expected positive finite number, received "${String(
-        props.simulationSpeed
-      )}".`
-    );
-  }
-
-  if (typeof props.showDiagnosticGuide !== 'boolean') {
-    errors.push('Prop "showDiagnosticGuide" must be a boolean.');
-  }
-  if (typeof props.hasCanFault !== 'boolean') {
-    errors.push('Prop "hasCanFault" must be a boolean.');
-  }
-  if (typeof props.hasInjectorFault !== 'boolean') {
-    errors.push('Prop "hasInjectorFault" must be a boolean.');
-  }
-  if (props.selectedPinId !== null && typeof props.selectedPinId !== 'string') {
-    errors.push('Prop "selectedPinId" must be a string or null.');
-  }
-
-  if (!isRecord(props.powerSupply)) {
-    errors.push('Prop "powerSupply" must be an object.');
-  } else {
-    if (!isFiniteNumber(props.powerSupply.voltageSetting)) {
-      errors.push('Prop "powerSupply.voltageSetting" must be a finite number.');
-    }
-    if (!isFiniteNumber(props.powerSupply.currentLimit)) {
-      errors.push('Prop "powerSupply.currentLimit" must be a finite number.');
-    }
-    if (typeof props.powerSupply.isOutputEnabled !== 'boolean') {
+  const supply: unknown = props.powerSupply;
+  if (!isRecord(supply)) errors.push('Prop "powerSupply" must be an object.');
+  else {
+    if (!isFiniteNumber(supply.voltageSetting) || supply.voltageSetting < 0)
+      errors.push(
+        'Prop "powerSupply.voltageSetting" must be finite and non-negative.',
+      );
+    if (!isFiniteNumber(supply.currentLimit) || supply.currentLimit < 0)
+      errors.push(
+        'Prop "powerSupply.currentLimit" must be finite and non-negative.',
+      );
+    if (typeof supply.isOutputEnabled !== "boolean")
       errors.push('Prop "powerSupply.isOutputEnabled" must be a boolean.');
-    }
   }
-
-  if (!isRecord(props.multimeter)) {
-    errors.push('Prop "multimeter" must be an object.');
-  } else {
-    if (typeof props.multimeter.mode !== 'string') {
+  const meter: unknown = props.multimeter;
+  if (!isRecord(meter)) errors.push('Prop "multimeter" must be an object.');
+  else {
+    if (typeof meter.mode !== "string")
       errors.push('Prop "multimeter.mode" must be a string.');
-    }
-    if (!isRecord(props.multimeter.redProbe) || !isRecord(props.multimeter.blackProbe)) {
-      errors.push('Props "multimeter.redProbe" and "multimeter.blackProbe" must be objects.');
-    }
+    if (!isRecord(meter.redProbe) || !isRecord(meter.blackProbe))
+      errors.push("Multimeter redProbe and blackProbe must be objects.");
   }
-
-  if (!isRecord(props.circuitSolution)) {
-    errors.push('Prop "circuitSolution" must be an MNA solver snapshot object.');
-  } else {
-    if (!isRecord(props.circuitSolution.nodeVoltages)) {
-      errors.push('Prop "circuitSolution.nodeVoltages" must be a record of node voltages.');
+  const solution: unknown = props.circuitSolution;
+  if (!isRecord(solution))
+    errors.push('Prop "circuitSolution" must be an MNA snapshot.');
+  else {
+    for (const key of ["nodeVoltages", "wireCurrentsMa"]) {
+      if (!isFiniteRecord(solution[key]))
+        errors.push(
+          `Prop "circuitSolution.${key}" must contain only finite numbers.`,
+        );
     }
-    if (!isRecord(props.circuitSolution.wireCurrentsMa)) {
-      errors.push('Prop "circuitSolution.wireCurrentsMa" must be a record of wire currents.');
-    }
-    if (!isRecord(props.circuitSolution.multimeterReading)) {
-      errors.push('Prop "circuitSolution.multimeterReading" must be an object.');
-    }
-    if (!Array.isArray(props.circuitSolution.activeDTCs)) {
+    if (!isRecord(solution.multimeterReading))
+      errors.push(
+        'Prop "circuitSolution.multimeterReading" must be an object.',
+      );
+    if (!Array.isArray(solution.activeDTCs))
       errors.push('Prop "circuitSolution.activeDTCs" must be an array.');
-    }
-    if (!isFiniteNumber(props.circuitSolution.supplyCurrentDrawAmps)) {
-      errors.push('Prop "circuitSolution.supplyCurrentDrawAmps" must be a finite number.');
-    }
+    if (!isFiniteNumber(solution.supplyCurrentDrawAmps))
+      errors.push(
+        'Prop "circuitSolution.supplyCurrentDrawAmps" must be finite.',
+      );
   }
-
-  const arrayProps: readonly (keyof LabWorkspaceLayoutProps)[] = [
-    'pins',
-    'components',
-    'wires',
-    'faults',
-    'savedSessions',
-    'savedLogs',
-  ];
-  for (const key of arrayProps) {
-    if (!Array.isArray(props[key])) {
-      errors.push(`Prop "${key}" must be an array.`);
-    }
+  for (const key of ["pins", "components", "wires", "faults"] as const) {
+    const items: unknown = props[key];
+    if (!Array.isArray(items)) errors.push(`Prop "${key}" must be an array.`);
+    else if (!items.every(isRecord))
+      errors.push(`Prop "${key}" must contain only objects.`);
   }
-
+  if (
+    Array.isArray(props.pins) &&
+    !props.pins.every(
+      (pin) =>
+        isRecord(pin) &&
+        typeof pin.id === "string" &&
+        isFiniteNumber(pin.pinNumber),
+    )
+  )
+    errors.push("Every pin must have a string id and finite pinNumber.");
+  if (
+    Array.isArray(props.components) &&
+    !props.components.every(
+      (component) =>
+        isRecord(component) &&
+        typeof component.id === "string" &&
+        (component.state === undefined || isRecord(component.state)),
+    )
+  )
+    errors.push(
+      "Every component needs a string id and an object state when provided.",
+    );
   for (const key of REQUIRED_CALLBACK_KEYS) {
-    if (typeof props[key] !== 'function') {
+    if (typeof props[key] !== "function")
       errors.push(`Callback prop "${key}" must be a function.`);
-    }
   }
-
+  for (const key of OPTIONAL_CALLBACK_KEYS) {
+    if (props[key] !== undefined && typeof props[key] !== "function")
+      errors.push(
+        `Optional callback "${key}" must be a function when provided.`,
+      );
+  }
   if (props.rpmEmulator !== undefined) {
-    if (!isRecord(props.rpmEmulator)) {
-      errors.push('Prop "rpmEmulator" must be an object when provided.');
-    } else {
-      if (typeof props.rpmEmulator.isActive !== 'boolean') {
-        errors.push('Prop "rpmEmulator.isActive" must be a boolean.');
-      }
-      if (!isFiniteNumber(props.rpmEmulator.rpm) || props.rpmEmulator.rpm < 0) {
-        errors.push('Prop "rpmEmulator.rpm" must be a non-negative finite number.');
-      }
-      if (typeof props.rpmEmulator.soundEnabled !== 'boolean') {
-        errors.push('Prop "rpmEmulator.soundEnabled" must be a boolean.');
-      }
-    }
+    const rpm: unknown = props.rpmEmulator;
+    if (
+      !isRecord(rpm) ||
+      typeof rpm.isActive !== "boolean" ||
+      !isFiniteNumber(rpm.rpm) ||
+      rpm.rpm < 0 ||
+      typeof rpm.soundEnabled !== "boolean"
+    )
+      errors.push(
+        "rpmEmulator requires boolean isActive/soundEnabled and finite non-negative rpm.",
+      );
   }
-
+  for (const key of [
+    "showDiagnosticGuide",
+    "hasCanFault",
+    "hasInjectorFault",
+  ] as const) {
+    if (typeof props[key] !== "boolean")
+      errors.push(`Prop "${key}" must be a boolean.`);
+  }
+  if (props.selectedPinId !== null && typeof props.selectedPinId !== "string")
+    errors.push('Prop "selectedPinId" must be a string or null.');
+  for (const key of ["selectedBrandKey", "selectedModelName"] as const) {
+    if (props[key] !== undefined && typeof props[key] !== "string")
+      errors.push(`Optional prop "${key}" must be a string.`);
+  }
+  if (
+    props.selectedEcuProfileId !== undefined &&
+    props.selectedEcuProfileId !== null &&
+    typeof props.selectedEcuProfileId !== "string"
+  )
+    errors.push("selectedEcuProfileId must be a string, null, or undefined.");
   return errors;
 }
 
-/**
- * Responsive flex-container workspace for the Virtual ECU Lab (`<main>`).
- *
- * Conditionally mounts `<InstrumentPanels />`, `<WiringCanvas />`, and `<ECUDiagnosticView />`
- * on the core `BENCH_LAB` view, or switches to expanded `WIRING_DIAGRAM`, `THREE_D_TWIN`,
- * `ECU_PINOUT`, `OSCILLOSCOPE` (split with harness canvas), `PCB_SCANNER`, or `REPAIR_GUIDE` views
- * based on `activeTab`. Contains zero physics or solver logic—all electrical telemetry is passed in
- * deterministically via `circuitSolution`. Includes runtime prop validation during development and
- * defensive fallback guards against malformed runtime structures.
- */
-export const LabWorkspaceLayout: React.FC<LabWorkspaceLayoutProps> = (props) => {
+/** Navigation and saved-data issues that the workspace can safely normalize. */
+function getRecoverableErrors(
+  props: Partial<LabWorkspaceLayoutProps>,
+): string[] {
+  const errors: string[] = [];
+  if (!props.activeTab || !VALID_LAB_TABS.includes(props.activeTab))
+    errors.push(`Invalid "activeTab": received "${String(props.activeTab)}".`);
+  if (!props.rackFilter || !VALID_RACK_FILTERS.includes(props.rackFilter))
+    errors.push(
+      `Invalid "rackFilter": received "${String(props.rackFilter)}".`,
+    );
+  if (
+    !props.mobileBenchPane ||
+    !DEFAULT_PANE_ORDER.includes(props.mobileBenchPane)
+  )
+    errors.push(
+      `Invalid "mobileBenchPane": received "${String(props.mobileBenchPane)}".`,
+    );
+  if (!isFiniteNumber(props.simulationSpeed) || props.simulationSpeed <= 0)
+    errors.push('Prop "simulationSpeed" must be a positive finite number.');
+  for (const key of ["savedSessions", "savedLogs"] as const) {
+    if (!Array.isArray(props[key]) || !props[key]?.every(isRecord))
+      errors.push(`Prop "${key}" must be an array of objects.`);
+  }
+  return errors;
+}
+
+/** Returns boundary violations without throwing for malformed nested hardware data. */
+export function validateLabWorkspaceProps(
+  props: Partial<LabWorkspaceLayoutProps>,
+): string[] {
+  return [...getHardwareErrors(props), ...getRecoverableErrors(props)];
+}
+
+/** Shared by drag, keyboard movement, and resize correction. */
+function clampPosition(point: Point, bounds: Size, element: Size): Point {
+  // Reduce the margin when the container cannot fit the control; never produce negative coordinates.
+  const availableX = Math.max(0, bounds.width - element.width);
+  const availableY = Math.max(0, bounds.height - element.height);
+  const minX = Math.min(FAB_MARGIN, availableX / 2);
+  const minY = Math.min(FAB_MARGIN, availableY / 2);
+  return {
+    x: Math.min(Math.max(minX, point.x), Math.max(minX, availableX - minX)),
+    y: Math.min(Math.max(minY, point.y), Math.max(minY, availableY - minY)),
+  };
+}
+
+/** Observes the actual mounted node, including replacements after validation errors. */
+function useWorkspaceSize(element: HTMLElement | null): Size {
+  const [size, setSize] = useState<Size>({ width: 0, height: 0 });
+  useEffect(() => {
+    if (!element) return;
+    let frame: number | null = null;
+    const measure = () => {
+      frame = null;
+      // clientWidth/clientHeight match the padding-box coordinates of absolute-positioned controls.
+      const width = element.clientWidth;
+      const height = element.clientHeight;
+      setSize((previous) =>
+        previous.width === width && previous.height === height
+          ? previous
+          : { width, height },
+      );
+    };
+    const schedule = () => {
+      if (frame === null) frame = window.requestAnimationFrame(measure);
+    };
+    measure();
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(schedule);
+    observer?.observe(element);
+    window.addEventListener("resize", schedule);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", schedule);
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, [element]);
+  return size;
+}
+
+interface ModuleBoundaryProps {
+  children: React.ReactNode;
+  label: string;
+  resetKey: string;
+  onReturnToBench: () => void;
+}
+class ModuleErrorBoundary extends Component<
+  ModuleBoundaryProps,
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error(
+      `[LabWorkspaceLayout] ${this.props.label} failed:`,
+      error,
+      info,
+    );
+  }
+  componentDidUpdate(previous: ModuleBoundaryProps) {
+    if (previous.resetKey !== this.props.resetKey && this.state.failed)
+      this.setState({ failed: false });
+  }
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <section
+        role="alert"
+        className="hud-panel rounded-xl border border-rose-500/40 p-4 min-w-0"
+      >
+        <h2 className="flex items-center gap-2 text-sm font-bold text-rose-300">
+          <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+          {this.props.label} is unavailable
+        </h2>
+        <p className="mt-2 text-xs text-slate-300">
+          The module could not load or render. Return to the bench, or reload to
+          fetch application assets. Reloading may discard unsaved changes.
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={this.props.onReturnToBench}
+            className="rounded bg-cyan-500 px-3 py-2 text-xs font-bold text-slate-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-200"
+          >
+            Return to bench
+          </button>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="rounded border border-slate-600 px-3 py-2 text-xs text-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-200"
+          >
+            Reload application
+          </button>
+        </div>
+      </section>
+    );
+  }
+}
+function LoadingPanel({ label }: { label: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+      className="hud-panel flex min-h-[180px] w-full flex-1 items-center justify-center gap-2 rounded-xl p-4 text-xs font-mono text-cyan-300"
+    >
+      <Activity
+        className="h-4 w-4 motion-safe:animate-pulse"
+        aria-hidden="true"
+      />
+      <span>Loading {label}…</span>
+    </div>
+  );
+}
+function LazyModule({
+  children,
+  label,
+  resetKey,
+  onReturnToBench,
+}: ModuleBoundaryProps) {
+  return (
+    <ModuleErrorBoundary
+      label={label}
+      resetKey={resetKey}
+      onReturnToBench={onReturnToBench}
+    >
+      <Suspense fallback={<LoadingPanel label={label} />}>{children}</Suspense>
+    </ModuleErrorBoundary>
+  );
+}
+
+interface FloatingVoiceControlProps {
+  container: HTMLElement | null;
+  containerSize: Size;
+  active: boolean;
+  opacity: FloatingOpacityLevel;
+  announcement: string;
+  onToggle: () => void;
+  onCycleOpacity: () => void;
+}
+interface DragSession {
+  pointerId: number;
+  start: Point;
+  origin: Point;
+  moved: boolean;
+  captureTarget: HTMLElement;
+}
+
+/** Pointer mechanics are isolated so every drag frame does not re-render the whole lab. */
+function FloatingVoiceControl({
+  container,
+  containerSize,
+  active,
+  opacity,
+  announcement,
+  onToggle,
+  onCycleOpacity,
+}: FloatingVoiceControlProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  const drag = useRef<DragSession | null>(null);
+  const timer = useRef<number | null>(null);
+  const suppressClick = useRef(false);
+  const [position, setPosition] = useState<Point | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [notice, setNotice] = useState("");
+  const instructionsId = useId();
+
+  const clearHold = useCallback(() => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+  }, []);
+  const getGeometry = useCallback(() => {
+    const element = ref.current;
+    return {
+      bounds: {
+        width: container?.clientWidth || containerSize.width || 0,
+        height: container?.clientHeight || containerSize.height || 0,
+      },
+      element: {
+        width: element?.offsetWidth ?? 148,
+        height: element?.offsetHeight ?? 48,
+      },
+      origin: {
+        x: element?.offsetLeft ?? FAB_MARGIN,
+        y: element?.offsetTop ?? FAB_MARGIN,
+      },
+    };
+  }, [container, containerSize.width, containerSize.height]);
+
+  // Observe the FAB too: active text, font loading, and breakpoints can change its dimensions.
+  useEffect(() => {
+    const node = ref.current;
+    const reclamp = () => {
+      const geometry = getGeometry();
+      if (geometry.bounds.width <= 0 || geometry.bounds.height <= 0) return;
+      setPosition((previous) => {
+        if (!previous) return previous;
+        const next = clampPosition(previous, geometry.bounds, geometry.element);
+        return next.x === previous.x && next.y === previous.y ? previous : next;
+      });
+    };
+    reclamp();
+    const observer =
+      node && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(reclamp)
+        : null;
+    if (node) observer?.observe(node);
+    return () => observer?.disconnect();
+  }, [getGeometry, active]);
+
+  const endInteraction = useCallback(
+    (cancelled: boolean) => {
+      clearHold();
+      const current = drag.current;
+      drag.current = null;
+      if (cancelled) suppressClick.current = true;
+      if (current) {
+        try {
+          if (current.captureTarget.hasPointerCapture(current.pointerId))
+            current.captureTarget.releasePointerCapture(current.pointerId);
+        } catch {
+          /* A detached control may already have lost capture. */
+        }
+      }
+      setDragging(false);
+    },
+    [clearHold],
+  );
+
+  useEffect(() => {
+    const cancel = () => endInteraction(true);
+    const onVisibility = () => {
+      if (document.hidden) cancel();
+    };
+    window.addEventListener("blur", cancel);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("blur", cancel);
+      document.removeEventListener("visibilitychange", onVisibility);
+      clearHold();
+      const current = drag.current;
+      drag.current = null;
+      if (current) {
+        try {
+          current.captureTarget.releasePointerCapture(current.pointerId);
+        } catch {
+          /* Detached. */
+        }
+      }
+    };
+  }, [clearHold, endInteraction]);
+
+  const pointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!event.isPrimary || event.button !== 0 || drag.current) return;
+    clearHold();
+    suppressClick.current = false;
+    setNotice("");
+    const target =
+      event.target instanceof Element ? event.target.closest("button") : null;
+    // Capture on the originating button, not its parent, so normal button clicks retain their target.
+    const captureTarget =
+      target instanceof HTMLElement ? target : event.currentTarget;
+    drag.current = {
+      pointerId: event.pointerId,
+      start: { x: event.clientX, y: event.clientY },
+      origin: getGeometry().origin,
+      moved: false,
+      captureTarget,
+    };
+    try {
+      captureTarget.setPointerCapture(event.pointerId);
+    } catch {
+      /* Synthetic events. */
+    }
+    timer.current = window.setTimeout(() => {
+      timer.current = null;
+      if (!drag.current || drag.current.moved) return;
+      suppressClick.current = true;
+      try {
+        navigator.vibrate?.(20);
+      } catch {
+        /* Optional platform capability. */
+      }
+      onCycleOpacity();
+    }, LONG_PRESS_MS);
+  };
+  const pointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const current = drag.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    const dx = event.clientX - current.start.x;
+    const dy = event.clientY - current.start.y;
+    if (!current.moved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+      current.moved = true;
+      suppressClick.current = true;
+      clearHold();
+      setDragging(true);
+    }
+    if (!current.moved) return;
+    const geometry = getGeometry();
+    // Convert viewport pointer deltas to local CSS coordinates for scaled host containers.
+    const rect = container?.getBoundingClientRect();
+    const scaleX =
+      container && rect && container.offsetWidth > 0
+        ? rect.width / container.offsetWidth
+        : 1;
+    const scaleY =
+      container && rect && container.offsetHeight > 0
+        ? rect.height / container.offsetHeight
+        : 1;
+    setPosition(
+      clampPosition(
+        {
+          x: current.origin.x + dx / (scaleX || 1),
+          y: current.origin.y + dy / (scaleY || 1),
+        },
+        geometry.bounds,
+        geometry.element,
+      ),
+    );
+  };
+  const pointerEnd = (
+    event: React.PointerEvent<HTMLDivElement>,
+    cancelled: boolean,
+  ) => {
+    if (drag.current?.pointerId === event.pointerId) endInteraction(cancelled);
+  };
+  const keyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    const vectors: Record<string, Point> = {
+      ArrowLeft: { x: -1, y: 0 },
+      ArrowRight: { x: 1, y: 0 },
+      ArrowUp: { x: 0, y: -1 },
+      ArrowDown: { x: 0, y: 1 },
+    };
+    const vector = vectors[event.key];
+    if (vector) {
+      event.preventDefault();
+      const geometry = getGeometry();
+      const step = event.shiftKey ? 32 : 16;
+      const next = clampPosition(
+        {
+          x: geometry.origin.x + vector.x * step,
+          y: geometry.origin.y + vector.y * step,
+        },
+        geometry.bounds,
+        geometry.element,
+      );
+      setPosition(next);
+      setNotice(
+        `Voice control moved to ${Math.round(next.x)}, ${Math.round(next.y)}.`,
+      );
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setPosition(null);
+      setNotice("Voice control returned to its default position.");
+    } else if (
+      event.key.toLowerCase() === "o" &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey
+    ) {
+      event.preventDefault();
+      setNotice("");
+      onCycleOpacity();
+    } else if (event.key === "Escape") {
+      endInteraction(true);
+    }
+  };
+  const clickAllowed = (event: React.MouseEvent<HTMLButtonElement>) =>
+    event.detail === 0 || !suppressClick.current;
+
+  return (
+    <div
+      ref={ref}
+      role="region"
+      aria-label="Draggable offline AI voice assistant control"
+      onPointerDown={pointerDown}
+      onPointerMove={pointerMove}
+      onPointerUp={(event) => pointerEnd(event, false)}
+      onPointerCancel={(event) => pointerEnd(event, true)}
+      onLostPointerCapture={(event) => pointerEnd(event, true)}
+      style={
+        position ? { left: position.x, top: position.y, opacity } : { opacity }
+      }
+      className={`absolute z-40 flex max-w-full items-center gap-1 rounded-full border p-1 shadow-2xl backdrop-blur-md touch-none select-none transition-opacity motion-reduce:transition-none hover:!opacity-100 focus-within:!opacity-100 ${
+        position ? "" : "right-2.5 bottom-[68px] sm:bottom-3 sm:right-[236px]"
+      } ${
+        dragging
+          ? "cursor-grabbing !opacity-100 border-cyan-300 bg-slate-900/95"
+          : active
+            ? "cursor-grab border-emerald-400/70 bg-slate-950/95"
+            : "cursor-grab border-cyan-500/45 bg-slate-950/90"
+      }`}
+    >
+      <span id={instructionsId} className="sr-only">
+        Enter or Space activates the focused control. Arrow keys move; Shift
+        increases the step. Home resets position. O cycles opacity. Drag to
+        move, or hold to cycle opacity.
+      </span>
+      <span
+        className="sr-only"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {notice || announcement}
+      </span>
+      <button
+        type="button"
+        data-testid="floating-voice-fab"
+        aria-pressed={active}
+        aria-label={`Offline AI voice assistant ${active ? "active" : "off"}`}
+        aria-describedby={instructionsId}
+        onKeyDown={keyDown}
+        title="Toggle voice · Hold or Shift+Click for opacity · Drag or Arrow keys to move"
+        onClick={(event) => {
+          if (!clickAllowed(event)) return;
+          setNotice("");
+          if (event.shiftKey) onCycleOpacity();
+          else onToggle();
+        }}
+        className={`flex min-h-[44px] min-w-[44px] items-center justify-center gap-1.5 rounded-full px-2.5 py-1.5 text-[11px] font-mono font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 ${
+          active
+            ? "bg-emerald-500 text-slate-950"
+            : "border border-cyan-500/30 bg-slate-900 text-cyan-200 hover:bg-slate-800"
+        }`}
+      >
+        <GripHorizontal
+          className="hidden h-3.5 w-3.5 shrink-0 opacity-70 xs:inline"
+          aria-hidden="true"
+        />
+        {active ? (
+          <Volume2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+        ) : (
+          <VolumeX className="h-4 w-4 shrink-0" aria-hidden="true" />
+        )}
+        <span className="whitespace-nowrap">
+          {active ? "AI Voice ON" : "AI Voice"}
+        </span>
+        {active && (
+          <Mic
+            className="h-3 w-3 shrink-0 motion-safe:animate-pulse"
+            aria-hidden="true"
+          />
+        )}
+      </button>
+      <button
+        type="button"
+        data-testid="floating-voice-opacity-btn"
+        onKeyDown={keyDown}
+        aria-label={`Cycle voice control opacity, currently ${Math.round(opacity * 100)} percent`}
+        aria-describedby={instructionsId}
+        title="Cycle floating voice control opacity"
+        onClick={(event) => {
+          if (clickAllowed(event)) {
+            setNotice("");
+            onCycleOpacity();
+          }
+        }}
+        className="flex min-h-[44px] min-w-[44px] items-center justify-center gap-1 rounded-full border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-mono font-semibold text-cyan-300 tabular-nums hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300"
+      >
+        <Eye className="h-3 w-3 shrink-0" aria-hidden="true" />
+        <span>{Math.round(opacity * 100)}%</span>
+      </button>
+    </div>
+  );
+}
+
+/** Validation is outside the live workspace: malformed props cannot reach context derivation or children. */
+export const LabWorkspaceLayout: React.FC<LabWorkspaceLayoutProps> = (
+  props,
+) => {
+  const fatalErrors = getHardwareErrors(props);
+  const errors = [...fatalErrors, ...getRecoverableErrors(props)];
+  const signature = errors.join("\n");
+  useEffect(() => {
+    if (import.meta.env.DEV && signature)
+      console.error(
+        "[LabWorkspaceLayout] Runtime prop validation failed:\n" + signature,
+      );
+  }, [signature]);
+  if (fatalErrors.length > 0) {
+    return (
+      <main className="relative flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
+        <section
+          role="alert"
+          aria-label="Workspace configuration error"
+          className="hud-panel max-h-full w-full max-w-lg overflow-auto rounded-xl border border-rose-500/50 p-4 text-xs text-rose-200"
+        >
+          <h2 className="text-sm font-bold uppercase tracking-wide text-rose-300">
+            Workspace configuration error
+          </h2>
+          <p className="my-2 text-slate-300">
+            Required hardware data or callbacks are missing or malformed.
+          </p>
+          <ul className="list-disc space-y-1 pl-4 font-mono">
+            {fatalErrors.map((error) => (
+              <li key={error}>{error}</li>
+            ))}
+          </ul>
+        </section>
+      </main>
+    );
+  }
+  return <WorkspaceContent {...props} />;
+};
+
+/** Layout-only controller. Electrical behavior remains owned by App.tsx and the solver. */
+function WorkspaceContent(props: LabWorkspaceLayoutProps) {
   const {
-    activeTab: rawActiveTab,
     onNavigateTab,
-    rackFilter: rawRackFilter,
     onChangeRackFilter,
-    mobileBenchPane: rawMobileBenchPane,
     onChangeMobileBenchPane,
     showDiagnosticGuide,
     onSetShowDiagnosticGuide,
-    simulationSpeed: rawSimulationSpeed,
     powerSupply,
     onChangePowerSupply,
     multimeter,
@@ -417,383 +944,265 @@ export const LabWorkspaceLayout: React.FC<LabWorkspaceLayoutProps> = (props) => 
     onSelectVehicleEcu,
     rpmEmulator,
     onChangeRpmEmulator,
-    savedSessions,
-    savedLogs,
   } = props;
-
+  const activeTab = VALID_LAB_TABS.includes(props.activeTab)
+    ? props.activeTab
+    : "BENCH_LAB";
+  const rackFilter = VALID_RACK_FILTERS.includes(props.rackFilter)
+    ? props.rackFilter
+    : "ALL";
+  const mobileBenchPane = DEFAULT_PANE_ORDER.includes(props.mobileBenchPane)
+    ? props.mobileBenchPane
+    : "INSTRUMENTS";
+  const simulationSpeed =
+    isFiniteNumber(props.simulationSpeed) && props.simulationSpeed > 0
+      ? props.simulationSpeed
+      : 1;
+  const safeSavedSessions = useMemo(
+    () =>
+      Array.isArray(props.savedSessions)
+        ? props.savedSessions.filter(isRecord)
+        : EMPTY_SESSIONS,
+    [props.savedSessions],
+  );
+  const safeSavedLogs = useMemo(
+    () =>
+      Array.isArray(props.savedLogs)
+        ? props.savedLogs.filter(isRecord)
+        : EMPTY_LOGS,
+    [props.savedLogs],
+  );
+  const [mainElement, setMainElement] = useState<HTMLElement | null>(null);
+  const attachMain = useCallback((node: HTMLElement | null) => {
+    setMainElement(node);
+  }, []);
+  const containerSize = useWorkspaceSize(mainElement);
+  const [paneOrder, setPaneOrder] = useState<MobileBenchPane[]>(() => [
+    ...DEFAULT_PANE_ORDER,
+  ]);
+  const [isContainerMoveMode, setIsContainerMoveMode] = useState(false);
+  const [showPinScopeOverlay, setShowPinScopeOverlay] = useState(false);
+  const [oscilloscopeViewMode, setOscilloscopeViewMode] =
+    useState<ScopeMode>("CRT");
+  const [isVoiceAssistantActive, setIsVoiceAssistantActive] = useState(false);
+  const [voiceFloatingOpacity, setVoiceFloatingOpacity] =
+    useState<FloatingOpacityLevel>(0.75);
+  const [voiceAnnouncement, setVoiceAnnouncement] = useState("");
+  const previousVoiceState = useRef(isVoiceAssistantActive);
+  const previousOpacity = useRef(voiceFloatingOpacity);
+  const generatedId = useId();
+  const paneId = (pane: MobileBenchPane) =>
+    `${generatedId}-${pane.toLowerCase()}`;
+  const scopeOverlayId = `${generatedId}-scope-overlay`;
+  const selectedPin = useMemo(
+    () => pins.find((pin) => pin.id === selectedPinId) ?? pins[0],
+    [pins, selectedPinId],
+  );
   const isInjectorFiring = useMemo(() => {
-    const inj = Array.isArray(components) ? components.find((c) => c.id === 'comp-inj') : undefined;
-    return Boolean(inj?.state?.isFiring ?? true);
+    const injector = components.find(
+      (component) => component.id === "comp-inj",
+    );
+    return Boolean(injector?.state?.isFiring ?? true);
   }, [components]);
-
+  const activeScopeRpm = rpmEmulator?.isActive ? rpmEmulator.rpm : 850;
   const vehicleContext = useMemo(
     () =>
       getSelectedVehicleContext(
         selectedBrandKey || UNIVERSAL_BRAND_KEY,
-        selectedModelName || 'Generic 16-Pin Bench',
-        selectedEcuProfileId ?? null
+        selectedModelName || "Generic 16-Pin Bench",
+        selectedEcuProfileId ?? null,
       ),
-    [selectedBrandKey, selectedModelName, selectedEcuProfileId]
+    [selectedBrandKey, selectedModelName, selectedEcuProfileId],
   );
+  const layoutTier: WorkspaceLayoutTier =
+    containerSize.width < 768
+      ? "COMPACT_MOBILE"
+      : containerSize.width < 1024
+        ? "TABLET_SPLIT"
+        : containerSize.width < 1280
+          ? "COMPACT_DESKTOP"
+          : "WIDE_DESKTOP";
+  const isCompactDesktop = layoutTier === "COMPACT_DESKTOP";
+  const isShortContainer =
+    containerSize.height > 0 && containerSize.height < 680;
 
-  const mainRef = useRef<HTMLElement>(null);
-  const [containerSize, setContainerSize] = useState<{ width: number; height: number }>({
-    width: 0,
-    height: 0,
-  });
-  const [paneOrder, setPaneOrder] = useState<MobileBenchPane[]>(() => [...DEFAULT_PANE_ORDER]);
-  const [isContainerMoveMode, setIsContainerMoveMode] = useState(false);
-  const [showPinScopeOverlay, setShowPinScopeOverlay] = useState(false);
-  const [oscilloscopeViewMode, setOscilloscopeViewMode] = useState<'CRT' | 'RECHARTS_PIN'>('CRT');
-
-  // Unified Floating Offline AI Voice Assistant state & opacity shared with FloatingLabNavigator
-  const [isVoiceAssistantActive, setIsVoiceAssistantActive] = useState(false);
-  const [voiceFloatingOpacity, setVoiceFloatingOpacity] = useState<FloatingOpacityLevel>(0.75);
-  const [voiceFabPos, setVoiceFabPos] = useState<{ x: number; y: number } | null>(null);
-  const [isDraggingVoiceFab, setIsDraggingVoiceFab] = useState(false);
-  const [voiceFabAnnouncement, setVoiceFabAnnouncement] = useState('');
-  const voiceFabRef = useRef<HTMLDivElement>(null);
-  const voiceFabDragRef = useRef<{
-    clientX: number;
-    clientY: number;
-    originX: number;
-    originY: number;
-    moved: boolean;
-    longPressTriggered: boolean;
-  } | null>(null);
-  const voiceFabHoldTimerRef = useRef<number | null>(null);
-
-  const selectedPin = useMemo(
-    () => (Array.isArray(pins) ? pins.find((p) => p.id === selectedPinId) || pins[0] : undefined),
-    [pins, selectedPinId]
-  );
-  const activeScopeRpm = rpmEmulator?.isActive ? rpmEmulator.rpm : 850;
-
-  const validationErrors = useMemo(() => validateLabWorkspaceProps(props), [props]);
-
-  useEffect(() => {
-    if (import.meta.env.DEV && validationErrors.length > 0) {
-      console.error('[LabWorkspaceLayout] Runtime prop validation failed:', validationErrors);
-    }
-  }, [validationErrors]);
-
-  // Observe `<main>` container dimensions for responsive internal panel adaptation
-  useEffect(() => {
-    const el = mainRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-
-    const updateSize = (width: number, height: number) => {
-      const nextW = Math.round(width);
-      const nextH = Math.round(height);
-      setContainerSize((prev) =>
-        prev.width === nextW && prev.height === nextH ? prev : { width: nextW, height: nextH }
+  // Updaters are pure. Audio and announcements run only after committed state changes.
+  const toggleVoice = useCallback((nextState?: boolean) => {
+    setIsVoiceAssistantActive((previous) =>
+      typeof nextState === "boolean" ? nextState : !previous,
+    );
+  }, []);
+  const cycleOpacity = useCallback(() => {
+    setVoiceFloatingOpacity((previous) => {
+      const index = FLOATING_OPACITY_LEVELS.indexOf(previous);
+      return (
+        FLOATING_OPACITY_LEVELS[(index + 1) % FLOATING_OPACITY_LEVELS.length] ??
+        0.75
       );
-    };
-
-    const rect = el.getBoundingClientRect();
-    updateSize(rect.width, rect.height);
-
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      updateSize(entry.contentRect.width, entry.contentRect.height);
-    });
-    observer.observe(el);
-
-    return () => {
-      observer.disconnect();
-    };
-  }, []);
-
-  const layoutTier: WorkspaceLayoutTier = useMemo(() => {
-    const w = containerSize.width;
-    if (w > 0 && w < 768) return 'COMPACT_MOBILE';
-    if (w >= 768 && w < 1024) return 'TABLET_SPLIT';
-    if (w >= 1024 && w < 1280) return 'COMPACT_DESKTOP';
-    return 'WIDE_DESKTOP';
-  }, [containerSize.width]);
-
-  const isCompactDesktop = layoutTier === 'COMPACT_DESKTOP';
-  const isShortContainer = containerSize.height > 0 && containerSize.height < 680;
-
-  const handleMovePane = useCallback((pane: MobileBenchPane, direction: 'prev' | 'next') => {
-    setPaneOrder((prev) => {
-      const idx = prev.indexOf(pane);
-      if (idx === -1) return prev;
-      const targetIdx = direction === 'prev' ? idx - 1 : idx + 1;
-      if (targetIdx < 0 || targetIdx >= prev.length) return prev;
-      const next = [...prev];
-      [next[idx], next[targetIdx]] = [next[targetIdx], next[idx]];
-      return next;
     });
   }, []);
-
-  const handleResetPaneOrder = useCallback(() => {
-    setPaneOrder([...DEFAULT_PANE_ORDER]);
-  }, []);
-
-  // Re-clamp dragged voice FAB whenever ResizeObserver reports container shrinks
   useEffect(() => {
-    if (!voiceFabPos || containerSize.width <= 0 || containerSize.height <= 0) return;
-    const fabRect = voiceFabRef.current?.getBoundingClientRect();
-    const fabW = fabRect?.width ?? 148;
-    const fabH = fabRect?.height ?? 48;
-    const maxX = Math.max(8, containerSize.width - fabW - 8);
-    const maxY = Math.max(8, containerSize.height - fabH - 8);
-    const clampedX = Math.min(Math.max(8, voiceFabPos.x), maxX);
-    const clampedY = Math.min(Math.max(8, voiceFabPos.y), maxY);
-    if (clampedX !== voiceFabPos.x || clampedY !== voiceFabPos.y) {
-      setVoiceFabPos({ x: clampedX, y: clampedY });
-    }
-  }, [containerSize.width, containerSize.height, voiceFabPos]);
-
-  // Clear hold-press timer on unmount
-  useEffect(() => {
-    return () => {
-      if (voiceFabHoldTimerRef.current !== null) {
-        window.clearTimeout(voiceFabHoldTimerRef.current);
+    if (previousVoiceState.current === isVoiceAssistantActive) return;
+    previousVoiceState.current = isVoiceAssistantActive;
+    if (rpmEmulator?.soundEnabled !== false) {
+      try {
+        playModuleActivationSound(isVoiceAssistantActive, "sensor");
+      } catch (error) {
+        if (import.meta.env.DEV)
+          console.warn("Activation audio unavailable:", error);
       }
-    };
-  }, []);
-
-  const handleToggleVoiceAssistantState = useCallback(
-    (nextState?: boolean) => {
-      setIsVoiceAssistantActive((prev) => {
-        const next = typeof nextState === 'boolean' ? nextState : !prev;
-        if (rpmEmulator?.soundEnabled !== false) {
-          playModuleActivationSound(next, 'sensor');
-        }
-        setVoiceFabAnnouncement(
-          next
-            ? `Offline AI voice assistant activated at ${Math.round(voiceFloatingOpacity * 100)}% opacity.`
-            : 'Offline AI voice assistant paused.'
-        );
+    }
+    setVoiceAnnouncement(
+      isVoiceAssistantActive
+        ? "Offline AI voice assistant activated."
+        : "Offline AI voice assistant paused.",
+    );
+  }, [isVoiceAssistantActive, rpmEmulator?.soundEnabled]);
+  useEffect(() => {
+    if (previousOpacity.current === voiceFloatingOpacity) return;
+    previousOpacity.current = voiceFloatingOpacity;
+    setVoiceAnnouncement(
+      `Voice control opacity set to ${Math.round(voiceFloatingOpacity * 100)} percent.`,
+    );
+  }, [voiceFloatingOpacity]);
+  const movePane = useCallback(
+    (pane: MobileBenchPane, direction: "prev" | "next") => {
+      setPaneOrder((previous) => {
+        const index = previous.indexOf(pane);
+        const target = index + (direction === "prev" ? -1 : 1);
+        if (index < 0 || target < 0 || target >= previous.length)
+          return previous;
+        const next = [...previous];
+        [next[index], next[target]] = [next[target], next[index]];
         return next;
       });
     },
-    [rpmEmulator?.soundEnabled, voiceFloatingOpacity]
+    [],
   );
+  const resetPaneOrder = useCallback(
+    () => setPaneOrder([...DEFAULT_PANE_ORDER]),
+    [],
+  );
+  const selectMobilePane = useCallback(
+    (pane: MobileBenchPane) => {
+      if (pane === "GUIDE") onSetShowDiagnosticGuide(true);
+      onChangeMobileBenchPane(pane);
+    },
+    [onSetShowDiagnosticGuide, onChangeMobileBenchPane],
+  );
+  const returnToBench = useCallback(() => {
+    setShowPinScopeOverlay(false);
+    onNavigateTab("BENCH_LAB");
+  }, [onNavigateTab]);
+  const closeGuide = useCallback(() => {
+    onSetShowDiagnosticGuide(false);
+    onChangeMobileBenchPane("INSTRUMENTS");
+  }, [onSetShowDiagnosticGuide, onChangeMobileBenchPane]);
+  const openFullScope = useCallback(() => {
+    setShowPinScopeOverlay(false);
+    setOscilloscopeViewMode("RECHARTS_PIN");
+    onNavigateTab("OSCILLOSCOPE");
+  }, [onNavigateTab]);
+  const closePinOverlay = useCallback(() => setShowPinScopeOverlay(false), []);
 
-  const handleCycleVoiceFloatingOpacity = useCallback(() => {
-    setVoiceFloatingOpacity((prev) => {
-      const idx = FLOATING_OPACITY_LEVELS.indexOf(prev);
-      const next = FLOATING_OPACITY_LEVELS[(idx + 1) % FLOATING_OPACITY_LEVELS.length];
-      setVoiceFabAnnouncement(
-        `Offline AI voice assistant opacity set to ${Math.round(next * 100)}%.`
-      );
-      return next;
-    });
-  }, []);
-
-  const clearVoiceFabHoldTimer = () => {
-    if (voiceFabHoldTimerRef.current !== null) {
-      window.clearTimeout(voiceFabHoldTimerRef.current);
-      voiceFabHoldTimerRef.current = null;
-    }
-  };
-
-  const handleVoiceFabPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0 && e.pointerType === 'mouse') return;
-    const fabEl = voiceFabRef.current;
-    if (!fabEl) return;
-
-    const fabRect = fabEl.getBoundingClientRect();
-    const parentRect = mainRef.current?.getBoundingClientRect();
-    const originX = voiceFabPos
-      ? voiceFabPos.x
-      : Math.max(8, fabRect.left - (parentRect?.left ?? 0));
-    const originY = voiceFabPos
-      ? voiceFabPos.y
-      : Math.max(8, fabRect.top - (parentRect?.top ?? 0));
-
-    voiceFabDragRef.current = {
-      clientX: e.clientX,
-      clientY: e.clientY,
-      originX,
-      originY,
-      moved: false,
-      longPressTriggered: false,
-    };
-
-    clearVoiceFabHoldTimer();
-    voiceFabHoldTimerRef.current = window.setTimeout(() => {
-      if (voiceFabDragRef.current && !voiceFabDragRef.current.moved) {
-        voiceFabDragRef.current.longPressTriggered = true;
-        if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-          navigator.vibrate(20);
-        }
-        handleCycleVoiceFloatingOpacity();
-      }
-    }, 420);
-  };
-
-  const handleVoiceFabPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const start = voiceFabDragRef.current;
-    if (!start) return;
-    const dx = e.clientX - start.clientX;
-    const dy = e.clientY - start.clientY;
-    if (!start.moved && Math.hypot(dx, dy) > 6) {
-      start.moved = true;
-      clearVoiceFabHoldTimer();
-      setIsDraggingVoiceFab(true);
-      try {
-        e.currentTarget.setPointerCapture(e.pointerId);
-      } catch {
-        // Synthetic pointer events may not have active pointerId
-      }
-    }
-    if (start.moved) {
-      const fabRect = voiceFabRef.current?.getBoundingClientRect();
-      const fabW = fabRect?.width ?? 148;
-      const fabH = fabRect?.height ?? 48;
-      const boundsW = containerSize.width || (typeof window !== 'undefined' ? window.innerWidth : 1024);
-      const boundsH = containerSize.height || (typeof window !== 'undefined' ? window.innerHeight : 768);
-      const maxX = Math.max(8, boundsW - fabW - 8);
-      const maxY = Math.max(8, boundsH - fabH - 8);
-      setVoiceFabPos({
-        x: Math.min(Math.max(8, start.originX + dx), maxX),
-        y: Math.min(Math.max(8, start.originY + dy), maxY),
-      });
-    }
-  };
-
-  const handleVoiceFabPointerUp = () => {
-    clearVoiceFabHoldTimer();
-    setIsDraggingVoiceFab(false);
-    // Leave moved flag readable briefly during click event on child button, then clear asynchronously
-    window.setTimeout(() => {
-      voiceFabDragRef.current = null;
-    }, 0);
-  };
-
-  const handleVoiceFabKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
-    const step = e.shiftKey ? 32 : 16;
-    if (
-      e.key === 'ArrowLeft' ||
-      e.key === 'ArrowRight' ||
-      e.key === 'ArrowUp' ||
-      e.key === 'ArrowDown'
-    ) {
-      e.preventDefault();
-      const fabRect = voiceFabRef.current?.getBoundingClientRect();
-      const parentRect = mainRef.current?.getBoundingClientRect();
-      const curX = voiceFabPos
-        ? voiceFabPos.x
-        : Math.max(8, (fabRect?.left ?? 0) - (parentRect?.left ?? 0));
-      const curY = voiceFabPos
-        ? voiceFabPos.y
-        : Math.max(8, (fabRect?.top ?? 0) - (parentRect?.top ?? 0));
-      const fabW = fabRect?.width ?? 148;
-      const fabH = fabRect?.height ?? 48;
-      const boundsW = containerSize.width || (typeof window !== 'undefined' ? window.innerWidth : 1024);
-      const boundsH = containerSize.height || (typeof window !== 'undefined' ? window.innerHeight : 768);
-      const maxX = Math.max(8, boundsW - fabW - 8);
-      const maxY = Math.max(8, boundsH - fabH - 8);
-      const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
-      const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
-      setVoiceFabPos({
-        x: Math.min(Math.max(8, curX + dx), maxX),
-        y: Math.min(Math.max(8, curY + dy), maxY),
-      });
-      return;
-    }
-
-    if (e.key === 'Home') {
-      e.preventDefault();
-      setVoiceFabPos(null);
-      setVoiceFabAnnouncement('Floating voice assistant button reset to default mobile position.');
-      return;
-    }
-
-    if (e.key === 'o' || e.key === 'O') {
-      e.preventDefault();
-      handleCycleVoiceFloatingOpacity();
-    }
-  };
-
-  const activeTab: LabTab = VALID_LAB_TABS.includes(rawActiveTab) ? rawActiveTab : 'BENCH_LAB';
-  const rackFilter: RackFilter = VALID_RACK_FILTERS.includes(rawRackFilter) ? rawRackFilter : 'ALL';
-  const mobileBenchPane: MobileBenchPane = VALID_MOBILE_PANES.includes(rawMobileBenchPane)
-    ? rawMobileBenchPane
-    : 'INSTRUMENTS';
-  const simulationSpeed =
-    isFiniteNumber(rawSimulationSpeed) && rawSimulationSpeed > 0 ? rawSimulationSpeed : 1.0;
-  const safeSavedSessions = Array.isArray(savedSessions) ? savedSessions : [];
-  const safeSavedLogs = Array.isArray(savedLogs) ? savedLogs : [];
-
-  const hasValidCoreHardwareState =
-    isRecord(powerSupply) &&
-    isRecord(multimeter) &&
-    isRecord(circuitSolution) &&
-    isRecord(circuitSolution.nodeVoltages) &&
-    isRecord(circuitSolution.wireCurrentsMa) &&
-    Array.isArray(circuitSolution.activeDTCs) &&
-    Array.isArray(pins) &&
-    Array.isArray(components) &&
-    Array.isArray(wires) &&
-    Array.isArray(faults);
-
-  if (!hasValidCoreHardwareState) {
-    return (
-      <main
-        ref={mainRef}
-        data-layout-tier={layoutTier}
-        className="relative flex-1 min-h-0 overflow-hidden p-3 flex items-center justify-center"
-      >
-        <section
-          role="alert"
-          aria-label="Workspace Prop Validation Error"
-          className="max-w-lg w-full hud-panel border border-rose-500/50 rounded-xl p-4 text-xs font-mono text-rose-200 space-y-2"
-        >
-          <h2 className="text-sm font-bold text-rose-400 uppercase tracking-wide">
-            Workspace Configuration Error
-          </h2>
-          <p className="text-slate-300 font-sans">
-            Required MNA solver or bench hardware props are missing or malformed.
-          </p>
-          {validationErrors.length > 0 && (
-            <ul className="list-disc pl-4 space-y-1 text-[11px] text-rose-300">
-              {validationErrors.map((err) => (
-                <li key={err}>{err}</li>
-              ))}
-            </ul>
-          )}
-        </section>
-      </main>
-    );
-  }
-
-  const renderMoveControls = (pane: MobileBenchPane, title: string) => {
+  // One prop contract for all harness instances: fixes the missing pinout action in scope split view.
+  const canvasProps = useMemo(
+    () => ({
+      pins,
+      wires,
+      components,
+      nodeVoltages: circuitSolution.nodeVoltages,
+      selectedPinId,
+      onSelectPin,
+      onAddWire,
+      onToggleCutWire,
+      onDeleteWire,
+      multimeter,
+      onAttachProbe,
+      onUpdateComponentState,
+      isPowerOn: powerSupply.isOutputEnabled,
+      onOpenEcuPinouts,
+      simulationSpeed,
+    }),
+    [
+      pins,
+      wires,
+      components,
+      circuitSolution.nodeVoltages,
+      selectedPinId,
+      onSelectPin,
+      onAddWire,
+      onToggleCutWire,
+      onDeleteWire,
+      multimeter,
+      onAttachProbe,
+      onUpdateComponentState,
+      powerSupply.isOutputEnabled,
+      onOpenEcuPinouts,
+      simulationSpeed,
+    ],
+  );
+  const pinScopeProps = useMemo(
+    () => ({
+      pins,
+      selectedPinId,
+      onSelectPin,
+      nodeVoltages: circuitSolution.nodeVoltages,
+      faults,
+      isPowerOn: powerSupply.isOutputEnabled,
+      hasCanFault,
+      hasInjectorFault,
+      isInjectorFiring,
+      rpm: activeScopeRpm,
+      simulationSpeed,
+    }),
+    [
+      pins,
+      selectedPinId,
+      onSelectPin,
+      circuitSolution.nodeVoltages,
+      faults,
+      powerSupply.isOutputEnabled,
+      hasCanFault,
+      hasInjectorFault,
+      isInjectorFiring,
+      activeScopeRpm,
+      simulationSpeed,
+    ],
+  );
+  const moveControls = (pane: MobileBenchPane) => {
     if (!isContainerMoveMode) return null;
-    const idx = paneOrder.indexOf(pane);
+    const index = paneOrder.indexOf(pane);
     return (
-      <div className="flex items-center justify-between gap-2 px-2 py-1 rounded-lg bg-amber-500/15 border border-amber-400/50 text-[10px] font-mono text-amber-200 shrink-0">
-        <span className="font-bold uppercase tracking-wide truncate">
-          Move: {title} (#{idx + 1})
+      <div
+        role="group"
+        aria-label={`Reorder ${PANEL_LABELS[pane]}`}
+        className="flex shrink-0 items-center justify-between gap-2 rounded-lg border border-amber-400/50 bg-amber-500/15 px-2 py-1 text-[10px] font-mono text-amber-200"
+      >
+        <span className="truncate font-bold">
+          Move: {PANEL_LABELS[pane]} (#{index + 1})
         </span>
-        <div className="flex items-center gap-1 shrink-0">
-          <button
-            type="button"
-            disabled={idx <= 0}
-            onClick={() => handleMovePane(pane, 'prev')}
-            className="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-30 border border-amber-500/40"
-            aria-label={`Move ${title} container earlier`}
-          >
-            ←
-          </button>
-          <button
-            type="button"
-            disabled={idx >= paneOrder.length - 1}
-            onClick={() => handleMovePane(pane, 'next')}
-            className="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-30 border border-amber-500/40"
-            aria-label={`Move ${title} container later`}
-          >
-            →
-          </button>
+        <div className="flex shrink-0 items-center gap-1">
+          {(["prev", "next"] as const).map((direction) => (
+            <button
+              key={direction}
+              type="button"
+              onClick={() => movePane(pane, direction)}
+              disabled={
+                direction === "prev"
+                  ? index === 0
+                  : index === paneOrder.length - 1
+              }
+              aria-label={`Move ${PANEL_LABELS[pane]} ${direction === "prev" ? "earlier" : "later"}`}
+              className="min-h-[32px] min-w-[32px] rounded border border-amber-500/40 bg-slate-900 px-2 disabled:opacity-30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"
+            >
+              {direction === "prev" ? "←" : "→"}
+            </button>
+          ))}
           <button
             type="button"
             onClick={() => setIsContainerMoveMode(false)}
-            className="px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 font-bold"
+            className="min-h-[32px] rounded bg-amber-500 px-2 font-bold text-slate-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-200"
           >
             Done
           </button>
@@ -801,557 +1210,391 @@ export const LabWorkspaceLayout: React.FC<LabWorkspaceLayoutProps> = (props) => 
       </div>
     );
   };
+  const module = (label: string, content: React.ReactNode, suffix = "") => (
+    <LazyModule
+      label={label}
+      resetKey={`${activeTab}:${suffix}`}
+      onReturnToBench={returnToBench}
+    >
+      {content}
+    </LazyModule>
+  );
+  const fullPaneClass = "flex-1 min-h-0 min-w-0 flex overflow-hidden w-full";
+  const isEmbeddedPinScope =
+    activeTab === "OSCILLOSCOPE" && oscilloscopeViewMode === "RECHARTS_PIN";
 
   return (
     <main
-      ref={mainRef}
+      ref={attachMain}
       data-layout-tier={layoutTier}
       data-container-size={`${containerSize.width}x${containerSize.height}`}
-      className="relative flex-1 min-h-0 overflow-hidden p-1.5 sm:p-3 flex flex-col lg:flex-row gap-2 sm:gap-3"
+      aria-label="Virtual ECU laboratory workspace"
+      className="relative flex min-h-0 flex-1 flex-col gap-2 overflow-hidden p-1.5 sm:gap-3 sm:p-3 lg:flex-row"
     >
-      {/* BENCH LAB: 3-Pane Workstation (<InstrumentPanels /> | <WiringCanvas /> | <ECUDiagnosticView />) */}
-      {activeTab === 'BENCH_LAB' && (
-        <>
-          {/* Mobile Workspace Switcher (< lg) ordered by paneOrder */}
-          <div className="flex lg:hidden items-center gap-1 hud-panel p-1 rounded-lg text-[11px] font-mono shrink-0">
-            {paneOrder.map((pane) => {
-              const isActive = mobileBenchPane === pane;
-              const label =
-                pane === 'INSTRUMENTS'
-                  ? `Instruments (${circuitSolution.supplyCurrentDrawAmps.toFixed(1)}A)`
-                  : pane === 'CANVAS'
-                  ? 'Harness Canvas'
-                  : `5-Step Guide (${circuitSolution.activeDTCs.length} DTC)`;
-              return (
+      <ModuleErrorBoundary
+        label="Workspace view"
+        resetKey={activeTab}
+        onReturnToBench={returnToBench}
+      >
+        {activeTab === "BENCH_LAB" && (
+          <>
+            <nav
+              aria-label="Mobile workspace panes"
+              className="hud-panel flex shrink-0 items-center gap-1 rounded-lg p-1 text-[11px] font-mono lg:hidden"
+            >
+              {paneOrder.map((pane) => (
                 <button
                   key={pane}
                   type="button"
-                  onClick={() => {
-                    if (pane === 'GUIDE') {
-                      onSetShowDiagnosticGuide(true);
-                    }
-                    onChangeMobileBenchPane(pane);
-                  }}
-                  className={`flex-1 py-1.5 px-2 rounded-md text-center transition whitespace-nowrap truncate ${
-                    isActive
-                      ? 'bg-cyan-500 text-slate-950 font-bold shadow-sm'
-                      : 'text-slate-300 hover:text-white'
+                  aria-pressed={mobileBenchPane === pane}
+                  onClick={() => selectMobilePane(pane)}
+                  className={`min-h-[44px] min-w-0 flex-1 truncate whitespace-nowrap rounded-md px-2 py-1.5 text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 ${
+                    mobileBenchPane === pane
+                      ? "bg-cyan-500 font-bold text-slate-950 shadow-sm"
+                      : "text-slate-300 hover:text-white"
                   }`}
                 >
-                  {label}
+                  {pane === "INSTRUMENTS"
+                    ? `Instruments (${circuitSolution.supplyCurrentDrawAmps.toFixed(1)}A)`
+                    : pane === "GUIDE"
+                      ? `5-Step Guide (${circuitSolution.activeDTCs.length} DTC)`
+                      : "Harness Canvas"}
                 </button>
-              );
-            })}
-          </div>
-
-          {paneOrder.map((pane) => {
-            if (pane === 'INSTRUMENTS') {
+              ))}
+            </nav>
+            {paneOrder.map((pane) => {
+              if (pane === "INSTRUMENTS")
+                return (
+                  <React.Fragment key={pane}>
+                    <InstrumentPanels
+                      visibleOnMobile={mobileBenchPane === pane}
+                      rackFilter={rackFilter}
+                      onChangeRackFilter={onChangeRackFilter}
+                      powerSupply={powerSupply}
+                      onChangePowerSupply={onChangePowerSupply}
+                      multimeter={multimeter}
+                      onChangeMultimeter={onChangeMultimeter}
+                      circuitSolution={circuitSolution}
+                      pins={pins}
+                      components={components}
+                      faults={faults}
+                      selectedPinId={selectedPinId}
+                      onSelectPin={onSelectPin}
+                      onAddFault={onAddFault}
+                      onRemoveFault={onRemoveFault}
+                      onClearAllFaults={onClearAllFaults}
+                      onSearchDtc={onSearchDtc}
+                      selectedBrandKey={selectedBrandKey}
+                      selectedModelName={selectedModelName}
+                      selectedEcuProfileId={selectedEcuProfileId}
+                      onSelectVehicleEcu={onSelectVehicleEcu}
+                      onOpenEcuPinouts={onOpenEcuPinouts}
+                      rpmEmulator={rpmEmulator}
+                      onChangeRpmEmulator={onChangeRpmEmulator}
+                      onUpdateComponentState={onUpdateComponentState}
+                      compactWidth={isCompactDesktop}
+                      isShortViewport={isShortContainer}
+                      moveControls={moveControls(pane)}
+                    />
+                  </React.Fragment>
+                );
+              if (pane === "CANVAS")
+                return (
+                  <section
+                    key={pane}
+                    id={paneId(pane)}
+                    aria-label="Harness wiring canvas"
+                    className={`min-h-0 min-w-0 flex-1 flex-col gap-1.5 overflow-hidden ${mobileBenchPane === pane ? "flex" : "hidden lg:flex"}`}
+                  >
+                    {moveControls(pane)}
+                    <WiringCanvas {...canvasProps} />
+                  </section>
+                );
               return (
-                <InstrumentPanels
-                  key="INSTRUMENTS"
-                  visibleOnMobile={mobileBenchPane === 'INSTRUMENTS'}
-                  rackFilter={rackFilter}
-                  onChangeRackFilter={onChangeRackFilter}
-                  powerSupply={powerSupply}
-                  onChangePowerSupply={onChangePowerSupply}
-                  multimeter={multimeter}
-                  onChangeMultimeter={onChangeMultimeter}
-                  circuitSolution={circuitSolution}
-                  pins={pins}
-                  components={components}
-                  faults={faults}
-                  selectedPinId={selectedPinId}
-                  onSelectPin={onSelectPin}
-                  onAddFault={onAddFault}
-                  onRemoveFault={onRemoveFault}
-                  onClearAllFaults={onClearAllFaults}
-                  onSearchDtc={onSearchDtc}
-                  selectedBrandKey={selectedBrandKey}
-                  selectedModelName={selectedModelName}
-                  selectedEcuProfileId={selectedEcuProfileId}
-                  onSelectVehicleEcu={onSelectVehicleEcu}
-                  onOpenEcuPinouts={onOpenEcuPinouts}
-                  rpmEmulator={rpmEmulator}
-                  onChangeRpmEmulator={onChangeRpmEmulator}
-                  onUpdateComponentState={onUpdateComponentState}
-                  compactWidth={isCompactDesktop}
-                  isShortViewport={isShortContainer}
-                  moveControls={renderMoveControls('INSTRUMENTS', 'Instruments')}
-                />
-              );
-            }
-
-            if (pane === 'CANVAS') {
-              return (
-                <section
-                  key="CANVAS"
-                  aria-label="Harness Wiring Canvas"
-                  className={`flex-1 min-h-0 min-w-0 flex-col gap-1.5 overflow-hidden ${
-                    mobileBenchPane === 'CANVAS' ? 'flex' : 'hidden lg:flex'
-                  }`}
-                >
-                  {renderMoveControls('CANVAS', 'Harness Canvas')}
-                  <WiringCanvas
+                <React.Fragment key={pane}>
+                  <ECUDiagnosticView
+                    visibleOnMobile={mobileBenchPane === pane}
+                    isOpen={showDiagnosticGuide || mobileBenchPane === pane}
+                    onClose={closeGuide}
+                    powerSupply={powerSupply}
                     pins={pins}
                     wires={wires}
-                    components={components}
-                    nodeVoltages={circuitSolution.nodeVoltages}
+                    faults={faults}
+                    circuitSolution={circuitSolution}
+                    multimeter={multimeter}
                     selectedPinId={selectedPinId}
                     onSelectPin={onSelectPin}
-                    onAddWire={onAddWire}
-                    onToggleCutWire={onToggleCutWire}
-                    onDeleteWire={onDeleteWire}
-                    multimeter={multimeter}
-                    onAttachProbe={onAttachProbe}
-                    onUpdateComponentState={onUpdateComponentState}
-                    isPowerOn={powerSupply.isOutputEnabled}
-                    onOpenEcuPinouts={onOpenEcuPinouts}
-                    simulationSpeed={simulationSpeed}
+                    onNavigateTab={onNavigateTab}
+                    onOpenOfflineBot={onOpenOfflineBot}
+                    compactWidth={isCompactDesktop}
+                    isShortViewport={isShortContainer}
+                    moveControls={moveControls(pane)}
                   />
-                </section>
+                </React.Fragment>
               );
-            }
-
-            return (
-              <ECUDiagnosticView
-                key="GUIDE"
-                visibleOnMobile={mobileBenchPane === 'GUIDE'}
-                isOpen={showDiagnosticGuide || mobileBenchPane === 'GUIDE'}
-                onClose={() => {
-                  onSetShowDiagnosticGuide(false);
-                  onChangeMobileBenchPane('INSTRUMENTS');
-                }}
-                powerSupply={powerSupply}
+            })}
+          </>
+        )}
+        {activeTab === "WIRING_DIAGRAM" && (
+          <section
+            aria-label="Expanded harness wiring canvas"
+            className={`${fullPaneClass} flex-col`}
+          >
+            <WiringCanvas {...canvasProps} />
+          </section>
+        )}
+        {activeTab === "THREE_D_TWIN" && (
+          <section aria-label="3D ECU bench twin" className={fullPaneClass}>
+            {module(
+              "3D ECU Bench Twin",
+              <ThreeBenchTwin
                 pins={pins}
                 wires={wires}
+                components={components}
                 faults={faults}
-                circuitSolution={circuitSolution}
+                activeDTCs={circuitSolution.activeDTCs}
+                nodeVoltages={circuitSolution.nodeVoltages}
+                wireCurrentsMa={circuitSolution.wireCurrentsMa}
                 multimeter={multimeter}
+                powerSupply={powerSupply}
+                selectedPinId={selectedPinId}
+                simulationSpeed={simulationSpeed}
+                onSelectPin={onSelectPin}
+                onAttachProbe={onAttachProbe}
+                onUpdateComponentState={onUpdateComponentState}
+                onOpenOfflineBot={onOpenOfflineBot}
+                onOpenGroundedSearch={onOpenGroundedSearch}
+              />,
+            )}
+          </section>
+        )}
+        {activeTab === "ECU_PINOUT" && (
+          <section
+            aria-label="ECU connector pinout library"
+            className={fullPaneClass}
+          >
+            {module(
+              "ECU Pinouts Library",
+              <EcuConnectorPinouts
+                pins={pins}
+                nodeVoltages={circuitSolution.nodeVoltages}
                 selectedPinId={selectedPinId}
                 onSelectPin={onSelectPin}
-                onNavigateTab={onNavigateTab}
-                onOpenOfflineBot={onOpenOfflineBot}
-                compactWidth={isCompactDesktop}
-                isShortViewport={isShortContainer}
-                moveControls={renderMoveControls('GUIDE', '5-Step Guide')}
-              />
-            );
-          })}
-        </>
-      )}
-
-      {/* EXPANDED WIRING DIAGRAM */}
-      {activeTab === 'WIRING_DIAGRAM' && (
-        <section
-          aria-label="Harness Wiring Canvas"
-          className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden w-full gap-3"
-        >
-          <WiringCanvas
-            pins={pins}
-            wires={wires}
-            components={components}
-            nodeVoltages={circuitSolution.nodeVoltages}
-            selectedPinId={selectedPinId}
-            onSelectPin={onSelectPin}
-            onAddWire={onAddWire}
-            onToggleCutWire={onToggleCutWire}
-            onDeleteWire={onDeleteWire}
-            multimeter={multimeter}
-            onAttachProbe={onAttachProbe}
-            onUpdateComponentState={onUpdateComponentState}
-            isPowerOn={powerSupply.isOutputEnabled}
-            onOpenEcuPinouts={onOpenEcuPinouts}
-            simulationSpeed={simulationSpeed}
-          />
-        </section>
-      )}
-
-      {/* 3D BENCH TWIN */}
-      {activeTab === 'THREE_D_TWIN' && (
-        <section aria-label="3D ECU Bench Twin" className="flex-1 min-h-0 min-w-0 flex overflow-hidden w-full">
-          <Suspense
-            fallback={
-              <div className="flex-1 hud-panel rounded-xl flex items-center justify-center text-xs font-mono text-cyan-300">
-                Initializing 3D ECU Bench Twin...
-              </div>
-            }
-          >
-            <ThreeBenchTwin
-              pins={pins}
-              wires={wires}
-              components={components}
-              faults={faults}
-              activeDTCs={circuitSolution.activeDTCs}
-              nodeVoltages={circuitSolution.nodeVoltages}
-              wireCurrentsMa={circuitSolution.wireCurrentsMa}
-              multimeter={multimeter}
-              powerSupply={powerSupply}
-              selectedPinId={selectedPinId}
-              simulationSpeed={simulationSpeed}
-              onSelectPin={onSelectPin}
-              onAttachProbe={onAttachProbe}
-              onUpdateComponentState={onUpdateComponentState}
-              onOpenOfflineBot={onOpenOfflineBot}
-              onOpenGroundedSearch={onOpenGroundedSearch}
-            />
-          </Suspense>
-        </section>
-      )}
-
-      {/* ECU CONNECTOR PINOUTS */}
-      {activeTab === 'ECU_PINOUT' && (
-        <section aria-label="ECU Connector Pinout Library" className="flex-1 min-h-0 min-w-0 flex overflow-hidden w-full">
-          <Suspense
-            fallback={
-              <div className="flex-1 flex items-center justify-center text-xs font-mono text-cyan-300">
-                Loading ECU Pinouts Library...
-              </div>
-            }
-          >
-            <EcuConnectorPinouts
-              pins={pins}
-              nodeVoltages={circuitSolution.nodeVoltages}
-              selectedPinId={selectedPinId}
-              onSelectPin={onSelectPin}
-              multimeter={multimeter}
-              onAttachProbe={onAttachProbe}
-              powerSupply={powerSupply}
-              externalBrandId={selectedEcuProfileId}
-              onSearchLivePinout={(model) =>
-                onOpenGroundedSearch(
-                  `${model} ECU bench pinout wiring diagram KL30 KL15 KL31 K-Line CAN`,
-                  '',
-                  model
-                )
-              }
-            />
-          </Suspense>
-        </section>
-      )}
-
-      {/* OSCILLOSCOPE + SPLIT WIRING CANVAS */}
-      {activeTab === 'OSCILLOSCOPE' && (
-        <section
-          aria-label="Oscilloscope and Harness Split View"
-          className="flex-1 min-h-0 min-w-0 flex flex-col gap-2.5 sm:gap-3 overflow-y-auto lg:overflow-hidden w-full"
-        >
-          <div className="flex items-center justify-between gap-2 hud-panel px-2.5 py-1.5 rounded-lg text-[10px] sm:text-xs font-mono shrink-0">
-            <span className="text-slate-400 uppercase tracking-wider font-bold hidden sm:inline">
-              Oscilloscope Display Mode
-            </span>
-            <div className="flex items-center gap-1.5 w-full sm:w-auto">
-              <button
-                type="button"
-                onClick={() => setOscilloscopeViewMode('CRT')}
-                className={`flex-1 sm:flex-none px-2.5 py-1 rounded border font-semibold transition ${
-                  oscilloscopeViewMode === 'CRT'
-                    ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
-                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
-                }`}
-              >
-                2-CH CRT Storage Scope
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setOscilloscopeViewMode('RECHARTS_PIN');
-                  setShowPinScopeOverlay(false);
-                }}
-                className={`flex-1 sm:flex-none px-2.5 py-1 rounded border font-semibold transition ${
-                  oscilloscopeViewMode === 'RECHARTS_PIN'
-                    ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
-                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
-                }`}
-              >
-                Selected Pin Trace (Recharts)
-              </button>
-            </div>
-          </div>
-
-          <Suspense
-            fallback={
-              <div className="h-[280px] hud-panel rounded-xl flex items-center justify-center text-xs font-mono text-cyan-300">
-                Initializing Oscilloscope...
-              </div>
-            }
-          >
-            {oscilloscopeViewMode === 'CRT' ? (
-              <Oscilloscope
-                isPowerOn={powerSupply.isOutputEnabled}
-                selectedSignal={hasCanFault ? 'CAN_BUS' : 'INJECTOR_PWM'}
-                hasCanFault={hasCanFault}
-                hasInjectorFault={hasInjectorFault}
-                simulationSpeed={simulationSpeed}
-                emulatorRpm={rpmEmulator?.rpm}
-                isRpmEmulatorActive={rpmEmulator?.isActive}
-                isInjectorFiring={isInjectorFiring}
-              />
-            ) : (
-              <PinWaveformOscilloscope
-                variant="embedded"
-                pins={pins}
-                selectedPinId={selectedPinId}
-                onSelectPin={(pinId) => onSelectPin(pinId)}
-                nodeVoltages={circuitSolution.nodeVoltages}
-                faults={faults}
-                isPowerOn={powerSupply.isOutputEnabled}
-                hasCanFault={hasCanFault}
-                hasInjectorFault={hasInjectorFault}
-                isInjectorFiring={isInjectorFiring}
-                rpm={activeScopeRpm}
-                simulationSpeed={simulationSpeed}
-              />
-            )}
-          </Suspense>
-          <section
-            aria-label="Harness Wiring Canvas"
-            className={`flex-1 ${
-              isShortContainer ? 'min-h-[220px] sm:min-h-[260px]' : 'min-h-[340px] sm:min-h-[360px]'
-            } min-w-0 flex flex-col overflow-hidden`}
-          >
-            <WiringCanvas
-              pins={pins}
-              wires={wires}
-              components={components}
-              nodeVoltages={circuitSolution.nodeVoltages}
-              selectedPinId={selectedPinId}
-              onSelectPin={onSelectPin}
-              onAddWire={onAddWire}
-              onToggleCutWire={onToggleCutWire}
-              onDeleteWire={onDeleteWire}
-              multimeter={multimeter}
-              onAttachProbe={onAttachProbe}
-              onUpdateComponentState={onUpdateComponentState}
-              isPowerOn={powerSupply.isOutputEnabled}
-              simulationSpeed={simulationSpeed}
-            />
-          </section>
-        </section>
-      )}
-
-      {/* PCB & AI SCHEMATIC SCANNER */}
-      {activeTab === 'PCB_SCANNER' && (
-        <section aria-label="PCB Schematic Scanner" className="flex-1 min-h-0 min-w-0 flex overflow-hidden w-full">
-          <Suspense
-            fallback={
-              <div className="flex-1 flex items-center justify-center text-xs font-mono text-cyan-300">
-                Loading PCB Scanner...
-              </div>
-            }
-          >
-            <SchematicPcbScanner
-              nodeVoltages={circuitSolution.nodeVoltages}
-              supplyCurrentDrawAmps={circuitSolution.supplyCurrentDrawAmps}
-              powerSupply={powerSupply}
-              faults={faults}
-              onOpenGroundedSearch={onOpenGroundedSearch}
-              onOpenOfflineBot={onOpenOfflineBot}
-              onOpenCloudModal={onOpenCloudModal}
-            />
-          </Suspense>
-        </section>
-      )}
-
-      {/* ECU REPAIR KNOWLEDGE BASE */}
-      {activeTab === 'REPAIR_GUIDE' && (
-        <section aria-label="ECU Repair Knowledge Base" className="flex-1 min-h-0 min-w-0 flex overflow-hidden w-full">
-          <Suspense
-            fallback={
-              <div className="flex-1 flex items-center justify-center text-xs font-mono text-cyan-300">
-                Loading Repair Knowledge Base...
-              </div>
-            }
-          >
-            <EcuRepairKnowledgeBase
-              savedSessions={safeSavedSessions}
-              savedLogs={safeSavedLogs}
-              liveActiveDtcs={circuitSolution.activeDTCs}
-              onOpenSavedBenches={onOpenCloudModal}
-            />
-          </Suspense>
-        </section>
-      )}
-      {/* Recharts Selected-Pin Oscilloscope Overlay + Quick Trigger Pill */}
-      {!(activeTab === 'OSCILLOSCOPE' && oscilloscopeViewMode === 'RECHARTS_PIN') && (
-        <div className="pointer-events-none fixed sm:absolute bottom-12 sm:bottom-3 left-2.5 sm:left-3 z-30 flex flex-col items-start gap-2 max-w-[calc(100vw-1.25rem)]">
-          {showPinScopeOverlay && (
-            <div className="pointer-events-auto w-[min(460px,calc(100vw-1.25rem))] shadow-2xl">
-              <Suspense
-                fallback={
-                  <div className="h-[220px] hud-panel rounded-xl flex items-center justify-center text-xs font-mono text-cyan-300">
-                    Loading Pin Oscilloscope...
-                  </div>
+                multimeter={multimeter}
+                onAttachProbe={onAttachProbe}
+                powerSupply={powerSupply}
+                externalBrandId={selectedEcuProfileId}
+                onSearchLivePinout={(model) =>
+                  onOpenGroundedSearch(
+                    `${model} ECU bench pinout wiring diagram KL30 KL15 KL31 K-Line CAN`,
+                    "",
+                    model,
+                  )
                 }
+              />,
+            )}
+          </section>
+        )}
+        {activeTab === "OSCILLOSCOPE" && (
+          <section
+            aria-label="Oscilloscope and harness split view"
+            className="flex min-h-0 min-w-0 flex-1 flex-col gap-2.5 overflow-y-auto sm:gap-3 lg:overflow-hidden"
+          >
+            <div className="hud-panel flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-[10px] font-mono sm:text-xs">
+              <span className="hidden font-bold uppercase tracking-wider text-slate-400 sm:inline">
+                Oscilloscope display mode
+              </span>
+              <div
+                role="group"
+                aria-label="Oscilloscope display mode"
+                className="flex w-full gap-1.5 sm:w-auto"
               >
+                {(["CRT", "RECHARTS_PIN"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    aria-pressed={oscilloscopeViewMode === mode}
+                    onClick={() => {
+                      setOscilloscopeViewMode(mode);
+                      if (mode === "RECHARTS_PIN")
+                        setShowPinScopeOverlay(false);
+                    }}
+                    className={`min-h-[44px] flex-1 rounded border px-2.5 py-1 font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 sm:flex-none ${
+                      oscilloscopeViewMode === mode
+                        ? "border-cyan-400 bg-cyan-500/20 text-cyan-200"
+                        : "border-slate-800 bg-slate-950 text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    {mode === "CRT"
+                      ? "2-CH CRT Storage Scope"
+                      : "Selected Pin Trace (Recharts)"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="min-w-0 shrink-0">
+              {module(
+                "Oscilloscope",
+                oscilloscopeViewMode === "CRT" ? (
+                  <Oscilloscope
+                    isPowerOn={powerSupply.isOutputEnabled}
+                    selectedSignal={hasCanFault ? "CAN_BUS" : "INJECTOR_PWM"}
+                    hasCanFault={hasCanFault}
+                    hasInjectorFault={hasInjectorFault}
+                    simulationSpeed={simulationSpeed}
+                    emulatorRpm={rpmEmulator?.rpm}
+                    isRpmEmulatorActive={rpmEmulator?.isActive}
+                    isInjectorFiring={isInjectorFiring}
+                    pins={pins}
+                    nodeVoltages={circuitSolution.nodeVoltages}
+                    faults={faults}
+                    selectedPinId={selectedPinId}
+                    onSelectPin={(pinId) => onSelectPin(pinId)}
+                  />
+                ) : (
+                  <PinWaveformOscilloscope
+                    variant="embedded"
+                    {...pinScopeProps}
+                  />
+                ),
+                oscilloscopeViewMode,
+              )}
+            </div>
+            <section
+              aria-label="Harness wiring canvas"
+              className={`flex min-w-0 flex-1 flex-col overflow-hidden ${isShortContainer ? "min-h-[220px] sm:min-h-[260px]" : "min-h-[340px] sm:min-h-[360px]"}`}
+            >
+              <WiringCanvas {...canvasProps} />
+            </section>
+          </section>
+        )}
+        {activeTab === "PCB_SCANNER" && (
+          <section aria-label="PCB schematic scanner" className={fullPaneClass}>
+            {module(
+              "PCB Scanner",
+              <SchematicPcbScanner
+                nodeVoltages={circuitSolution.nodeVoltages}
+                supplyCurrentDrawAmps={circuitSolution.supplyCurrentDrawAmps}
+                powerSupply={powerSupply}
+                faults={faults}
+                onOpenGroundedSearch={onOpenGroundedSearch}
+                onOpenOfflineBot={onOpenOfflineBot}
+                onOpenCloudModal={onOpenCloudModal}
+              />,
+            )}
+          </section>
+        )}
+        {activeTab === "REPAIR_GUIDE" && (
+          <section
+            aria-label="ECU repair knowledge base"
+            className={fullPaneClass}
+          >
+            {module(
+              "Repair Knowledge Base",
+              <EcuRepairKnowledgeBase
+                savedSessions={safeSavedSessions}
+                savedLogs={safeSavedLogs}
+                liveActiveDtcs={circuitSolution.activeDTCs}
+                onOpenSavedBenches={onOpenCloudModal}
+              />,
+            )}
+          </section>
+        )}
+      </ModuleErrorBoundary>
+
+      {!isEmbeddedPinScope && (
+        <div className="pointer-events-none fixed bottom-12 left-2.5 z-30 flex max-w-[calc(100vw-1.25rem)] flex-col items-start gap-2 sm:absolute sm:bottom-3 sm:left-3">
+          {showPinScopeOverlay && (
+            <section
+              id={scopeOverlayId}
+              aria-label="Selected pin oscilloscope overlay"
+              className="pointer-events-auto max-h-[70dvh] w-[min(460px,calc(100vw-1.25rem))] overflow-auto shadow-2xl"
+            >
+              {module(
+                "Pin Oscilloscope",
                 <PinWaveformOscilloscope
                   variant="overlay"
-                  pins={pins}
-                  selectedPinId={selectedPinId}
-                  onSelectPin={(pinId) => onSelectPin(pinId)}
-                  nodeVoltages={circuitSolution.nodeVoltages}
-                  faults={faults}
-                  isPowerOn={powerSupply.isOutputEnabled}
-                  hasCanFault={hasCanFault}
-                  hasInjectorFault={hasInjectorFault}
-                  isInjectorFiring={isInjectorFiring}
-                  rpm={activeScopeRpm}
-                  simulationSpeed={simulationSpeed}
-                  onClose={() => setShowPinScopeOverlay(false)}
-                  onOpenFullScopeTab={() => {
-                    onNavigateTab('OSCILLOSCOPE');
-                    setOscilloscopeViewMode('RECHARTS_PIN');
-                  }}
-                />
-              </Suspense>
-            </div>
+                  {...pinScopeProps}
+                  onClose={closePinOverlay}
+                  onOpenFullScopeTab={openFullScope}
+                />,
+                "overlay",
+              )}
+            </section>
           )}
-
           <button
             type="button"
-            onClick={() => setShowPinScopeOverlay((prev) => !prev)}
             aria-expanded={showPinScopeOverlay}
-            aria-label="Toggle Pin Oscilloscope Overlay"
-            className={`pointer-events-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border text-[10px] sm:text-[11px] font-mono font-bold shadow-lg backdrop-blur-md transition ${
+            aria-controls={showPinScopeOverlay ? scopeOverlayId : undefined}
+            aria-label="Toggle pin oscilloscope overlay"
+            onClick={() => setShowPinScopeOverlay((previous) => !previous)}
+            className={`pointer-events-auto flex min-h-[44px] items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[10px] font-mono font-bold shadow-lg backdrop-blur-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 sm:text-[11px] ${
               showPinScopeOverlay
-                ? 'bg-cyan-500 text-slate-950 border-cyan-300'
-                : 'bg-slate-950/90 hover:bg-slate-900 text-cyan-300 border-cyan-500/40'
+                ? "border-cyan-300 bg-cyan-500 text-slate-950"
+                : "border-cyan-500/40 bg-slate-950/90 text-cyan-300 hover:bg-slate-900"
             }`}
           >
-            <Activity className="w-3.5 h-3.5 shrink-0" />
+            <Activity className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span>Pin Scope</span>
             {selectedPin && (
               <span
-                className={`hidden xs:inline tabular-nums ${
-                  showPinScopeOverlay ? 'text-slate-900' : 'text-amber-300'
-                }`}
+                className={`hidden tabular-nums xs:inline ${showPinScopeOverlay ? "text-slate-900" : "text-amber-300"}`}
               >
-                #{selectedPin.pinNumber} ·{' '}
-                {(circuitSolution.nodeVoltages[selectedPin.id] ?? 0).toFixed(2)}V
+                #{selectedPin.pinNumber} ·{" "}
+                {(circuitSolution.nodeVoltages[selectedPin.id] ?? 0).toFixed(2)}
+                V
               </span>
             )}
           </button>
         </div>
       )}
-
-      {/* Floating, Draggable Offline AI Voice Assistant Action Button (Mobile-First Accessibility) */}
-      <div
-        ref={voiceFabRef}
-        role="region"
-        aria-label="Draggable Offline AI Voice Assistant Action Control"
-        onPointerDown={handleVoiceFabPointerDown}
-        onPointerMove={handleVoiceFabPointerMove}
-        onPointerUp={handleVoiceFabPointerUp}
-        onPointerCancel={handleVoiceFabPointerUp}
-        style={
-          voiceFabPos
-            ? { left: `${voiceFabPos.x}px`, top: `${voiceFabPos.y}px`, opacity: voiceFloatingOpacity }
-            : { opacity: voiceFloatingOpacity }
-        }
-        className={`absolute z-30 flex items-center gap-1 rounded-full border p-1 shadow-2xl backdrop-blur-md touch-none select-none transition-opacity duration-150 hover:!opacity-100 focus-within:!opacity-100 ${
-          voiceFabPos ? '' : 'right-2.5 sm:right-3 bottom-[68px] sm:bottom-[64px]'
-        } ${
-          isDraggingVoiceFab
-            ? 'cursor-grabbing !opacity-100 border-cyan-300 bg-slate-900/95 scale-[1.03]'
-            : isVoiceAssistantActive
-            ? 'cursor-grab border-emerald-400/70 bg-slate-950/95'
-            : 'cursor-grab border-cyan-500/45 bg-slate-950/90'
-        }`}
-      >
-        <span className="sr-only" role="status" aria-live="polite">
-          {voiceFabAnnouncement}
-        </span>
-
-        <button
-          type="button"
-          data-testid="floating-voice-fab"
-          aria-pressed={isVoiceAssistantActive}
-          aria-label={`Toggle offline AI voice assistant (${isVoiceAssistantActive ? 'Active' : 'Off'}). Drag or use arrow keys to move.`}
-          title="Tap to toggle Offline AI Voice Assistant · Hold or Shift+Click for opacity · Drag or Arrow keys to move"
-          onKeyDown={handleVoiceFabKeyDown}
-          onClick={(e) => {
-            if (voiceFabDragRef.current?.moved || voiceFabDragRef.current?.longPressTriggered) {
-              return;
-            }
-            if (e.shiftKey) {
-              handleCycleVoiceFloatingOpacity();
-              return;
-            }
-            handleToggleVoiceAssistantState();
-          }}
-          className={`min-h-[44px] min-w-[44px] px-2.5 py-1.5 rounded-full flex items-center justify-center gap-1.5 text-[11px] font-mono font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 ${
-            isVoiceAssistantActive
-              ? 'bg-emerald-500 text-slate-950 shadow-sm'
-              : 'bg-slate-900 hover:bg-slate-800 text-cyan-200 border border-cyan-500/30'
-          }`}
-        >
-          <GripHorizontal className="w-3.5 h-3.5 opacity-70 shrink-0 hidden xs:inline" aria-hidden="true" />
-          {isVoiceAssistantActive ? (
-            <Volume2 className="w-4 h-4 shrink-0" aria-hidden="true" />
-          ) : (
-            <VolumeX className="w-4 h-4 shrink-0" aria-hidden="true" />
-          )}
-          <span className="whitespace-nowrap">
-            {isVoiceAssistantActive ? 'AI Voice ON' : 'AI Voice'}
-          </span>
-          {isVoiceAssistantActive && (
-            <Mic className="w-3 h-3 text-slate-950/85 animate-pulse shrink-0" aria-hidden="true" />
-          )}
-        </button>
-
-        <button
-          type="button"
-          data-testid="floating-voice-opacity-btn"
-          aria-label={`Toggle offline AI voice assistant opacity (currently ${Math.round(voiceFloatingOpacity * 100)}%)`}
-          title="Cycle floating voice assistant opacity (25% / 50% / 75% / 100%)"
-          onClick={() => {
-            if (voiceFabDragRef.current?.moved || voiceFabDragRef.current?.longPressTriggered) {
-              return;
-            }
-            handleCycleVoiceFloatingOpacity();
-          }}
-          className="min-h-[40px] min-w-[44px] px-2 py-1 rounded-full bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] font-mono font-semibold text-cyan-300 tabular-nums flex items-center justify-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300"
-        >
-          <Eye className="w-3 h-3 shrink-0" aria-hidden="true" />
-          <span>{Math.round(voiceFloatingOpacity * 100)}%</span>
-        </button>
-      </div>
-
-      {/* Floating Hold-Press Container Control, Opacity Selector & Offline Voice Navigator */}
-      <FloatingLabNavigator
+      <FloatingVoiceControl
+        container={mainElement}
         containerSize={containerSize}
-        activeTab={activeTab}
-        mobileBenchPane={mobileBenchPane}
-        paneOrder={paneOrder}
-        isContainerMoveMode={isContainerMoveMode}
-        onToggleContainerMoveMode={() => setIsContainerMoveMode((prev) => !prev)}
-        onMovePane={handleMovePane}
-        onResetPaneOrder={handleResetPaneOrder}
-        onSelectMobilePane={(pane) => {
-          if (pane === 'GUIDE') {
-            onSetShowDiagnosticGuide(true);
-          }
-          onChangeMobileBenchPane(pane);
-        }}
-        onNavigateTab={onNavigateTab}
-        powerSupply={powerSupply}
-        onChangePowerSupply={onChangePowerSupply}
-        multimeter={multimeter}
-        pins={pins}
-        wires={wires}
-        faults={faults}
-        circuitSolution={circuitSolution}
-        selectedPinId={selectedPinId}
-        onAttachProbe={onAttachProbe}
-        onClearAllFaults={onClearAllFaults}
-        onResetLab={onResetLab}
-        savedSessions={safeSavedSessions}
-        savedLogs={safeSavedLogs}
-        vehicleContext={vehicleContext}
-        voiceNavEnabled={isVoiceAssistantActive}
-        onVoiceNavEnabledChange={handleToggleVoiceAssistantState}
-        dockOpacity={voiceFloatingOpacity}
-        onDockOpacityChange={setVoiceFloatingOpacity}
+        active={isVoiceAssistantActive}
+        opacity={voiceFloatingOpacity}
+        announcement={voiceAnnouncement}
+        onToggle={toggleVoice}
+        onCycleOpacity={cycleOpacity}
       />
+      <ModuleErrorBoundary
+        label="Floating lab navigator"
+        resetKey={activeTab}
+        onReturnToBench={returnToBench}
+      >
+        <FloatingLabNavigator
+          containerSize={containerSize}
+          activeTab={activeTab}
+          mobileBenchPane={mobileBenchPane}
+          paneOrder={paneOrder}
+          isContainerMoveMode={isContainerMoveMode}
+          onToggleContainerMoveMode={() =>
+            setIsContainerMoveMode((previous) => !previous)
+          }
+          onMovePane={movePane}
+          onResetPaneOrder={resetPaneOrder}
+          onSelectMobilePane={selectMobilePane}
+          onNavigateTab={onNavigateTab}
+          powerSupply={powerSupply}
+          onChangePowerSupply={onChangePowerSupply}
+          multimeter={multimeter}
+          pins={pins}
+          wires={wires}
+          faults={faults}
+          circuitSolution={circuitSolution}
+          selectedPinId={selectedPinId}
+          onAttachProbe={onAttachProbe}
+          onClearAllFaults={onClearAllFaults}
+          onResetLab={onResetLab}
+          savedSessions={safeSavedSessions}
+          savedLogs={safeSavedLogs}
+          vehicleContext={vehicleContext}
+          voiceNavEnabled={isVoiceAssistantActive}
+          onVoiceNavEnabledChange={toggleVoice}
+          dockOpacity={voiceFloatingOpacity}
+          onDockOpacityChange={setVoiceFloatingOpacity}
+        />
+      </ModuleErrorBoundary>
     </main>
   );
-};
+}
