@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   ArrowLeftRight,
   ArrowUpDown,
+  Binary,
   Download,
   GitCompare,
   Maximize2,
@@ -25,6 +26,7 @@ import {
 } from 'lucide-react';
 import { EcuPin, InjectedFault } from '../types/ecu';
 import { SignalGenerator } from '../simulation/signals/SignalGenerator';
+import { BinaryStateMonitor } from './BinaryStateMonitor';
 
 export interface PinWaveformOscilloscopeProps {
   /** Ordered array of 16 ECU connector pins. */
@@ -129,6 +131,7 @@ export const PinWaveformOscilloscope: React.FC<PinWaveformOscilloscopeProps> = (
   const [isAutoScale, setIsAutoScale] = useState(false);
   const [axisScaleMode, setAxisScaleMode] = useState<'AUTO' | 'SHARED' | 'SPLIT'>('AUTO');
   const [showCursors, setShowCursors] = useState(false);
+  const [showBinaryMonitor, setShowBinaryMonitor] = useState(false);
   const [cursorAMs, setCursorAMs] = useState<number>(10);
   const [cursorBMs, setCursorBMs] = useState<number>(30);
 
@@ -525,6 +528,22 @@ export const PinWaveformOscilloscope: React.FC<PinWaveformOscilloscopeProps> = (
           >
             <Ruler className="w-3 h-3" />
             <span>A/B</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowBinaryMonitor((prev) => !prev)}
+            aria-pressed={showBinaryMonitor}
+            aria-label="Toggle Binary State Logic Monitor"
+            title="Detect and display PWM duty/edges and CAN bus binary frame patterns on the selected pin"
+            className={`px-2 py-1 text-[10px] rounded border flex items-center gap-1 font-bold transition ${
+              showBinaryMonitor
+                ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                : 'bg-slate-950 border-slate-700 text-slate-300 hover:border-cyan-500/50'
+            }`}
+          >
+            <Binary className="w-3 h-3" />
+            <span>BIN</span>
           </button>
 
           <button
@@ -1049,6 +1068,24 @@ export const PinWaveformOscilloscope: React.FC<PinWaveformOscilloscopeProps> = (
           ))}
         </div>
       </div>
+
+      {/* Inline Binary State Monitor Drawer (when toggled via BIN button) */}
+      {showBinaryMonitor && (
+        <BinaryStateMonitor
+          variant="compact"
+          pins={pins}
+          selectedPinId={ch1Pin?.id ?? selectedPinId}
+          onSelectPin={onSelectPin}
+          nodeVoltages={nodeVoltages}
+          faults={faults}
+          isPowerOn={isPowerOn}
+          hasCanFault={hasCanFault}
+          hasInjectorFault={hasInjectorFault}
+          isInjectorFiring={isInjectorFiring}
+          rpm={rpm}
+          simulationSpeed={simulationSpeed}
+        />
+      )}
     </section>
   );
 };

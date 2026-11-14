@@ -11,6 +11,7 @@ import { FaultManager } from '../faults/FaultManager';
 import { SignalGenerator } from '../signals/SignalGenerator';
 import {
   solveCircuit,
+  analyzePinBinaryState,
   DEFAULT_ECU_PINS,
   DEFAULT_BENCH_COMPONENTS,
   DEFAULT_WIRES,
@@ -621,6 +622,224 @@ function testOscilloscopeSignals() {
 }
 
 // ==========================================
+// 7. BINARY STATE MONITOR (PWM & CAN DECODER) TESTS
+// ==========================================
+function testBinaryStateMonitor() {
+  const healthyPsu: PowerSupplyState = {
+    voltageSetting: 12.6,
+    currentLimit: 5.0,
+    isOutputEnabled: true,
+    preset: '12V_BENCH',
+  };
+  const dmmDummy: MultimeterState = {
+    mode: 'V_DC',
+    redProbe: { attachedToPinId: 'ecu-pin-10', attachedLabel: 'INJ_1 (Pin 10)' },
+    blackProbe: { attachedToPinId: 'chassis-gnd', attachedLabel: 'Chassis GND' },
+    isPowered: true,
+    rangeAuto: true,
+    holdValue: false,
+  };
+  const baseSolution = solveCircuit(
+    healthyPsu,
+    DEFAULT_ECU_PINS,
+    [],
+    DEFAULT_WIRES,
+    DEFAULT_BENCH_COMPONENTS,
+    dmmDummy
+  );
+
+  // 7.1: INJ_1 PWM Detection & RPM-Proportional Duty Cycle Scaling
+  const inj850 = analyzePinBinaryState({
+    pinId: 'ecu-pin-10',
+    pinLabel: 'INJ_1',
+    pinNumber: 10,
+    mnaNodeVoltage: baseSolution.nodeVoltages['ecu-pin-10'] ?? 12.6,
+    isPowerOn: true,
+    hasCanFault: false,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 850,
+    tStartSec: 0.42,
+    windowMs: 100,
+  });
+  const inj3000 = analyzePinBinaryState({
+    pinId: 'ecu-pin-10',
+    pinLabel: 'INJ_1',
+    pinNumber: 10,
+    mnaNodeVoltage: baseSolution.nodeVoltages['ecu-pin-10'] ?? 12.6,
+    isPowerOn: true,
+    hasCanFault: false,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 3000,
+    tStartSec: 0.42,
+    windowMs: 100,
+  });
+
+  assert(
+    'INJ_1 Binary Monitor Detects Active-Low PWM & Physical RPM Duty Cycle Scaling',
+    'Binary State Monitor',
+    inj850.detectedProtocol === 'PWM_ACTUATOR' &&
+      inj850.metrics.activePolarity === 'ACTIVE_LOW' &&
+      inj850.metrics.edgeCount >= 2 &&
+      inj850.metrics.pulseWidthMs >= 2.2 &&
+      inj850.metrics.pulseWidthMs <= 2.8 &&
+      Math.abs(inj850.metrics.frequencyHz - 850 / 60) <= 1.5 &&
+      inj850.metrics.dutyCyclePct >= 2.0 &&
+      inj850.metrics.dutyCyclePct <= 6.0 &&
+      inj3000.metrics.dutyCyclePct >= inj850.metrics.dutyCyclePct * 2.2 &&
+      inj3000.metrics.frequencyHz >= 45 &&
+      (inj850.metrics.flybackPeakV ?? 0) > 25,
+    'PWM_ACTUATOR, ~2.5ms pulse, ~14.2Hz & ~3.5% @ 850 RPM, ~50Hz & >10% @ 3000 RPM, flyback > 25V',
+    `proto=${inj850.detectedProtocol}, pw=${inj850.metrics.pulseWidthMs}ms, f850=${inj850.metrics.frequencyHz}Hz, duty850=${inj850.metrics.dutyCyclePct}%, duty3000=${inj3000.metrics.dutyCyclePct}%, f3000=${inj3000.metrics.frequencyHz}Hz, flyback=${inj850.metrics.flybackPeakV}V`
+  );
+
+  // 7.2: IGN_1 5V Logic Dwell Trigger Detection
+  const ign1200 = analyzePinBinaryState({
+    pinId: 'ecu-pin-11',
+    pinLabel: 'IGN_1',
+    pinNumber: 11,
+    mnaNodeVoltage: baseSolution.nodeVoltages['ecu-pin-11'] ?? 0,
+    isPowerOn: true,
+    hasCanFault: false,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 1200,
+    tStartSec: 0,
+    windowMs: 120,
+  });
+  assert(
+    'IGN_1 Binary Monitor Detects 5V Logic Coil Dwell Trigger',
+    'Binary State Monitor',
+    ign1200.detectedProtocol === 'LOGIC_PULSE' &&
+      ign1200.metrics.activePolarity === 'ACTIVE_HIGH' &&
+      ign1200.metrics.edgeCount >= 4 &&
+      ign1200.metrics.pulseWidthMs >= 2.5 &&
+      ign1200.metrics.pulseWidthMs <= 3.5 &&
+      Math.abs(ign1200.metrics.frequencyHz - 20) <= 1.0,
+    'LOGIC_PULSE, ~3.0ms pulse @ 20 Hz (1200 RPM)',
+    `proto=${ign1200.detectedProtocol}, pw=${ign1200.metrics.pulseWidthMs}ms, f=${ign1200.metrics.frequencyHz}Hz, edges=${ign1200.metrics.edgeCount}`
+  );
+
+  // 7.3: CAN_H ISO 11898 Differential Frame Pattern Decoding
+  const canHealthy = analyzePinBinaryState({
+    pinId: 'ecu-pin-13',
+    pinLabel: 'CAN_H',
+    pinNumber: 13,
+    mnaNodeVoltage: baseSolution.nodeVoltages['ecu-pin-13'] ?? 2.5,
+    companionMnaVoltage: baseSolution.nodeVoltages['ecu-pin-14'] ?? 2.5,
+    isPowerOn: true,
+    hasCanFault: false,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 1200,
+    tStartSec: 0,
+  });
+  assert(
+    'CAN_H Binary Monitor Decodes ISO 11898 Differential Bitstream & Frame Summary',
+    'Binary State Monitor',
+    canHealthy.detectedProtocol === 'CAN_BUS' &&
+      canHealthy.samples.length === 48 &&
+      canHealthy.bitString.length === 48 &&
+      canHealthy.hexBytes.length === 6 &&
+      canHealthy.canFrameSummary !== null &&
+      canHealthy.canFrameSummary.health === 'ACTIVE_500KBPS' &&
+      canHealthy.canFrameSummary.vDiffMax >= 1.9 &&
+      canHealthy.canFrameSummary.dominantPct > 10 &&
+      canHealthy.canFrameSummary.recessivePct > 10 &&
+      canHealthy.canFrameSummary.sofDetected === true,
+    'CAN_BUS, 48 bits, 6 hex bytes, Vdiff>=1.9V, SOF detected',
+    `proto=${canHealthy.detectedProtocol}, bits=${canHealthy.bitString.length}, bytes=${canHealthy.hexBytes.length}, vDiffMax=${canHealthy.canFrameSummary?.vDiffMax}V, dom=${canHealthy.canFrameSummary?.dominantPct}%, sof=${canHealthy.canFrameSummary?.sofDetected}`
+  );
+
+  // 7.4: CAN_H Fault Collapse (SHORT_TO_GND / hasCanFault)
+  const canFaultSol = solveCircuit(
+    healthyPsu,
+    DEFAULT_ECU_PINS,
+    [{ pinId: 'ecu-pin-13', faultType: 'SHORT_TO_GND', description: 'CAN_H short to GND', timestamp: Date.now() }],
+    DEFAULT_WIRES,
+    DEFAULT_BENCH_COMPONENTS,
+    dmmDummy
+  );
+  const canFaulted = analyzePinBinaryState({
+    pinId: 'ecu-pin-13',
+    pinLabel: 'CAN_H',
+    pinNumber: 13,
+    mnaNodeVoltage: canFaultSol.nodeVoltages['ecu-pin-13'] ?? 0,
+    companionMnaVoltage: canFaultSol.nodeVoltages['ecu-pin-14'] ?? 2.5,
+    faultType: 'SHORT_TO_GND',
+    isPowerOn: true,
+    hasCanFault: true,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 1200,
+    tStartSec: 0,
+  });
+  assert(
+    'CAN Bus Short-to-GND Fault Collapses Differential Traffic to BUS_FAULT_COLLAPSED',
+    'Binary State Monitor',
+    canFaulted.detectedProtocol === 'FAULT_OR_OFF' &&
+      canFaulted.canFrameSummary?.health === 'BUS_FAULT_COLLAPSED' &&
+      canFaulted.canFrameSummary?.dominantPct === 0,
+    'FAULT_OR_OFF, BUS_FAULT_COLLAPSED, dominantPct=0',
+    `proto=${canFaulted.detectedProtocol}, health=${canFaulted.canFrameSummary?.health}, dom=${canFaulted.canFrameSummary?.dominantPct}%`
+  );
+
+  // 7.5: Static DC Analog Pin (TPS_SIG) vs Regulated 5V Rail (VREF_5V) + PSU OFF
+  const tpsStatic = analyzePinBinaryState({
+    pinId: 'ecu-pin-7',
+    pinLabel: 'TPS_SIG',
+    pinNumber: 7,
+    mnaNodeVoltage: baseSolution.nodeVoltages['ecu-pin-7'] ?? 0.68,
+    isPowerOn: true,
+    hasCanFault: false,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 850,
+    tStartSec: 0,
+  });
+  const vrefHigh = analyzePinBinaryState({
+    pinId: 'ecu-pin-5',
+    pinLabel: 'VREF_5V',
+    pinNumber: 5,
+    mnaNodeVoltage: baseSolution.nodeVoltages['ecu-pin-5'] ?? 5.0,
+    isPowerOn: true,
+    hasCanFault: false,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 850,
+    tStartSec: 0,
+  });
+  const psuOffCan = analyzePinBinaryState({
+    pinId: 'ecu-pin-13',
+    pinLabel: 'CAN_H',
+    pinNumber: 13,
+    mnaNodeVoltage: 0,
+    companionMnaVoltage: 0,
+    isPowerOn: false,
+    hasCanFault: false,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 850,
+    tStartSec: 0,
+  });
+  assert(
+    'Static DC Pins Report 0 Edges & PSU OFF Halts CAN Frame Decoding',
+    'Binary State Monitor',
+    tpsStatic.detectedProtocol === 'STATIC_LEVEL' &&
+      tpsStatic.metrics.edgeCount === 0 &&
+      tpsStatic.metrics.currentLogicLevel === 0 &&
+      vrefHigh.detectedProtocol === 'STATIC_LEVEL' &&
+      vrefHigh.metrics.currentLogicLevel === 1 &&
+      vrefHigh.metrics.dutyCyclePct === 100 &&
+      psuOffCan.detectedProtocol === 'FAULT_OR_OFF' &&
+      psuOffCan.canFrameSummary?.health === 'POWER_OFF',
+    'TPS static 0 edges (LOW), VREF static 100% (HIGH), PSU OFF CAN -> POWER_OFF',
+    `tps=${tpsStatic.detectedProtocol}/${tpsStatic.metrics.edgeCount}/${tpsStatic.metrics.currentLogicLevel}, vref=${vrefHigh.metrics.dutyCyclePct}%/${vrefHigh.metrics.currentLogicLevel}, off=${psuOffCan.canFrameSummary?.health}`
+  );
+}
+
+// ==========================================
 // RUNNER & REPORTING
 // ==========================================
 export function runAllTests(): { passed: number; failed: number; total: number; results: TestResult[] } {
@@ -633,6 +852,7 @@ export function runAllTests(): { passed: number; failed: number; total: number; 
     testFaultInjection();
     testMultimeterModes();
     testOscilloscopeSignals();
+    testBinaryStateMonitor();
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     testResults.push({

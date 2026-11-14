@@ -56,6 +56,11 @@ const PinWaveformOscilloscope = lazy(() =>
     default: m.PinWaveformOscilloscope,
   })),
 );
+const BinaryStateMonitor = lazy(() =>
+  import("./BinaryStateMonitor").then((m) => ({
+    default: m.BinaryStateMonitor,
+  })),
+);
 const SchematicPcbScanner = lazy(() =>
   import("./SchematicPcbScanner").then((m) => ({
     default: m.SchematicPcbScanner,
@@ -168,7 +173,7 @@ export type WorkspaceLayoutTier =
 
 type Size = Readonly<{ width: number; height: number }>;
 type Point = Readonly<{ x: number; y: number }>;
-type ScopeMode = "CRT" | "RECHARTS_PIN";
+type ScopeMode = "CRT" | "RECHARTS_PIN" | "BINARY_MONITOR";
 const VALID_LAB_TABS: readonly LabTab[] = [
   "BENCH_LAB",
   "WIRING_DIAGRAM",
@@ -1241,7 +1246,9 @@ function WorkspaceContent(props: LabWorkspaceLayoutProps) {
   );
   const fullPaneClass = "flex-1 min-h-0 min-w-0 flex overflow-hidden w-full";
   const isEmbeddedPinScope =
-    activeTab === "OSCILLOSCOPE" && oscilloscopeViewMode === "RECHARTS_PIN";
+    activeTab === "OSCILLOSCOPE" &&
+    (oscilloscopeViewMode === "RECHARTS_PIN" ||
+      oscilloscopeViewMode === "BINARY_MONITOR");
 
   return (
     <main
@@ -1427,29 +1434,32 @@ function WorkspaceContent(props: LabWorkspaceLayoutProps) {
               <div
                 role="group"
                 aria-label="Oscilloscope display mode"
-                className="flex w-full gap-1.5 sm:w-auto"
+                className="flex w-full flex-wrap gap-1.5 sm:w-auto"
               >
-                {(["CRT", "RECHARTS_PIN"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    aria-pressed={oscilloscopeViewMode === mode}
-                    onClick={() => {
-                      setOscilloscopeViewMode(mode);
-                      if (mode === "RECHARTS_PIN")
-                        setShowPinScopeOverlay(false);
-                    }}
-                    className={`min-h-[44px] flex-1 rounded border px-2.5 py-1 font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 sm:flex-none ${
-                      oscilloscopeViewMode === mode
-                        ? "border-cyan-400 bg-cyan-500/20 text-cyan-200"
-                        : "border-slate-800 bg-slate-950 text-slate-400 hover:text-white"
-                    }`}
-                  >
-                    {mode === "CRT"
-                      ? "2-CH CRT Storage Scope"
-                      : "Selected Pin Trace (Recharts)"}
-                  </button>
-                ))}
+                {(["CRT", "RECHARTS_PIN", "BINARY_MONITOR"] as const).map(
+                  (mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      aria-pressed={oscilloscopeViewMode === mode}
+                      onClick={() => {
+                        setOscilloscopeViewMode(mode);
+                        if (mode !== "CRT") setShowPinScopeOverlay(false);
+                      }}
+                      className={`min-h-[44px] flex-1 rounded border px-2.5 py-1 font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 sm:flex-none ${
+                        oscilloscopeViewMode === mode
+                          ? "border-cyan-400 bg-cyan-500/20 text-cyan-200"
+                          : "border-slate-800 bg-slate-950 text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      {mode === "CRT"
+                        ? "2-CH CRT Storage Scope"
+                        : mode === "RECHARTS_PIN"
+                          ? "Selected Pin Trace (Recharts)"
+                          : "Binary State Monitor (PWM / CAN)"}
+                    </button>
+                  ),
+                )}
               </div>
             </div>
             <div className="min-w-0 shrink-0">
@@ -1473,11 +1483,13 @@ function WorkspaceContent(props: LabWorkspaceLayoutProps) {
                     selectedPinId={selectedPinId}
                     onSelectPin={(pinId) => onSelectPin(pinId)}
                   />
-                ) : (
+                ) : oscilloscopeViewMode === "RECHARTS_PIN" ? (
                   <PinWaveformOscilloscope
                     variant="embedded"
                     {...pinScopeProps}
                   />
+                ) : (
+                  <BinaryStateMonitor variant="full" {...pinScopeProps} />
                 ),
                 oscilloscopeViewMode,
               )}

@@ -5,3 +5,14 @@ export {
   solveCircuit,
 } from '../simulation/ecu/BenchCircuitSolver';
 export type { CircuitSolution, SolveCircuitOptions } from '../simulation/ecu/BenchCircuitSolver';
+export { analyzePinBinaryState } from '../simulation/signals/BinaryStateDecoder';
+export type {
+  AnalyzePinBinaryStateParams,
+  BinaryDetectedProtocol,
+  BinaryLogicSample,
+  BinaryPinMetrics,
+  BinaryPinMonitorResult,
+  BinaryPolarity,
+  CanBusHealth,
+  CanFramePatternSummary,
+} from '../simulation/signals/BinaryStateDecoder';
