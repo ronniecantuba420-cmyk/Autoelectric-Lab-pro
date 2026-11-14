@@ -223,18 +223,7 @@ export function parseAndExecuteVoiceCommand(
     }
   }
 
-  // 8. Hardware-Conflict / OCR_VERIFY Voice Gate
-  const safetyGates = matchSafetyGatesForQuery(text);
-  if (safetyGates.length > 0 && /(?:pin|pinout|verify|check|energize|probe|guide|bench|ecu|volt)/i.test(text)) {
-    const primary = safetyGates[0];
-    return {
-      matched: true,
-      actionDescription: `${primary.title}: ${primary.prompt}`,
-      spokenReply: primary.spokenAlert,
-    };
-  }
-
-  // 8b. Restricted PART_METADATA_ONLY / MECHANICAL_NO_ECU Anti-Fabrication Guardrail
+  // 8. Restricted PART_METADATA_ONLY / MECHANICAL_NO_ECU Anti-Fabrication Guardrail
   const restrictedMatches = matchRestrictedModelsForQuery(text);
   if (restrictedMatches.length > 0 && /(?:pin|pinout|wiring|ecu|bench|check|guide)/i.test(text)) {
     const first = restrictedMatches[0];
@@ -248,7 +237,7 @@ export function parseAndExecuteVoiceCommand(
     };
   }
 
-  // 9. Verified Voice-Ready ECU Bench Guide Match (e.g. "Ranger T6", "EcoBlue CBR", "EcoSport 1.5L", "Focus GDI", "PowerShift TCM", "Territory 1.5L", "Explorer", "Transit 2.2L", "1NZ-FE", "SID209")
+  // 9. Verified Voice-Ready ECU Bench Guide Match (Toyota PH-Market 10 OEM Pinouts, Ford 10 OEM Pinouts, Mitsubishi, Nissan, Honda, Isuzu, Hyundai, Suzuki)
   const guideStopWords = new Set([
     'denso',
     'honda',
@@ -295,20 +284,25 @@ export function parseAndExecuteVoiceCommand(
   let bestGuide: (typeof VERIFIED_VOICE_ECU_GUIDES)[number] | undefined;
   let bestScore = 0;
 
-  const queryWords = new Set(text.split(/[\s/,()[\]&+-]+/).filter(Boolean));
+  const queryWords = new Set(text.split(/[\s/,()[\]&+]+/).filter(Boolean));
+  const querySubWords = new Set(text.split(/[\s/,()[\]&+-]+/).filter(Boolean));
 
   for (const g of VERIFIED_VOICE_ECU_GUIDES) {
-    const rawTokens = [
+    const baseTokens = [
       ...g.ecuName.toLowerCase().split(/[\s/,()[\]&]+/),
       ...g.models.join(' ').toLowerCase().split(/[\s/,()[\]&]+/),
-    ].filter((t) => (t.length >= 3 || allowedShortTokens.has(t)) && !guideStopWords.has(t));
+    ];
+    const subTokens = baseTokens.flatMap((t) => (t.includes('-') ? [t, ...t.split('-')] : [t]));
+    const rawTokens = subTokens.filter(
+      (t) => (t.length >= 3 || allowedShortTokens.has(t)) && !guideStopWords.has(t) && t !== 'ftv'
+    );
 
     const uniqueTokens = Array.from(new Set(rawTokens));
     let score = 0;
     for (const tok of uniqueTokens) {
       if (tok.length <= 2) {
-        if (queryWords.has(tok)) score += 3;
-      } else if (queryWords.has(tok)) {
+        if (queryWords.has(tok) || querySubWords.has(tok)) score += 3;
+      } else if (queryWords.has(tok) || querySubWords.has(tok)) {
         score += 3;
       } else if (text.includes(tok)) {
         score += 2;
@@ -318,6 +312,31 @@ export function parseAndExecuteVoiceCommand(
       bestScore = score;
       bestGuide = g;
     }
+  }
+
+  if (
+    bestGuide &&
+    bestGuide.status === 'VERIFIED' &&
+    bestScore >= 3 &&
+    /(?:pin|pinout|bench|boot|guide|wakeup|wake\s*up|ecu|pcm|tcm|power|ignition|ground|connect|wiring)/i.test(text)
+  ) {
+    const gateSuffix = bestGuide.ocrVerifyGate ? ` | ${bestGuide.ocrVerifyGate}` : '';
+    return {
+      matched: true,
+      actionDescription: `${bestGuide.brandLabel} ${bestGuide.ecuName} (${bestGuide.tableRef}): ${bestGuide.keyBenchPins}${gateSuffix}`,
+      spokenReply: bestGuide.voicePrompt,
+    };
+  }
+
+  // 10. Hardware-Conflict / OCR_VERIFY Voice Gate
+  const safetyGates = matchSafetyGatesForQuery(text);
+  if (safetyGates.length > 0 && /(?:pin|pinout|verify|check|energize|probe|guide|bench|ecu|volt)/i.test(text)) {
+    const primary = safetyGates[0];
+    return {
+      matched: true,
+      actionDescription: `${primary.title}: ${primary.prompt}`,
+      spokenReply: primary.spokenAlert,
+    };
   }
 
   if (

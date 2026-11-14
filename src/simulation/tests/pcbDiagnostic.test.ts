@@ -624,5 +624,105 @@ describe('PcbDiagnosticEngine — Deterministic MNA, Electro-Thermal & Probe Sui
     assert.ok(botReply.answer.includes('C1E148'));
     assert.ok(botReply.answer.includes('B20'));
   });
+
+  it('verifies all 10 Toyota PH-Market OEM ECU & TCM Bench Pinouts, Polarity Warning, Voice Command Parser & Offline AI Chatbot', () => {
+    const toyotaProfile = ECU_BRAND_PROFILES.find((p) => p.id === 'toyota-denso-175822');
+    assert.ok(toyotaProfile, 'Toyota Denso OEM ECU profile must exist');
+    assert.ok(
+      toyotaProfile!.description.includes('WARNING: Pinout Verification & Polarity'),
+      'Toyota profile description must include the mandatory Pinout Verification & Polarity warning'
+    );
+
+    const expectedToyotaPinCodes = [
+      // 1. Hilux / Fortuner / Innova (1GD-FTV & 2GD-FTV)
+      '1GD-A1', '1GD-A28', '1GD-A3', '1GD-A41', '1GD-A42', '1GD-B14',
+      // 2. Hilux / Fortuner / Hiace (1KD-FTV & 2KD-FTV)
+      'E5-1', 'E5-9', 'E5-3', 'E5-23', 'E5-24', 'E6-12',
+      // 3. Innova (2.0L 1TR-FE VVT-i Gasoline)
+      '1TR-A1', '1TR-A18', '1TR-A3', '1TR-A33', '1TR-B21',
+      // 4. Hiace Commuter / GL Grandia (2.8L 1GD-FTV)
+      'HI-A1', 'HI-A28', 'HI-A3', 'HI-A41', 'HI-B54',
+      // 5. Vios / Yaris (1.5L 1NZ-FE & 1.3L 2NZ-FE)
+      '1NZ-A1', '1NZ-A15', '1NZ-A3', '1NZ-A27', '1NZ-B19',
+      // 6. Vios / Yaris (1.5L 2NR-FE & 1.3L 1NR-FE Dual VVT-i)
+      '2NR-A1', '2NR-A21', '2NR-A3', '2NR-A37', '2NR-B24',
+      // 7. Wigo / Agya (1.0L 1KR-FE / 1KR-VE)
+      '1KR-A1', '1KR-A12', '1KR-A3', '1KR-A22', '1KR-B16',
+      // 8. Avanza / Rush (1.5L 2NR-VE & 1.3L 1NR-VE)
+      'AV-A1', 'AV-A19', 'AV-A3', 'AV-A31', 'AV-B20',
+      // 9. Corolla Altis (1.6L 1ZR-FE & 1.8L 2ZR-FE Dual VVT-i)
+      'ZR-A1', 'ZR-A24', 'ZR-A3', 'ZR-A39', 'ZR-B22',
+      // 10. Fortuner / Hilux 6AT TCM (Aisin AC60E / AC60F)
+      'AC60-P1', 'AC60-P11', 'AC60-P15', 'AC60-P21', 'AC60-P12',
+    ];
+
+    for (const code of expectedToyotaPinCodes) {
+      assert.ok(
+        toyotaProfile!.pinouts.some((p) => p.pinCode === code),
+        `Toyota profile must contain pinCode ${code}`
+      );
+    }
+
+    assert.equal(
+      VERIFIED_VOICE_ECU_GUIDES.filter((g) => g.brandKey === 'toyota').length,
+      10,
+      'Must include all 10 verified PH-Market Toyota OEM voice guides'
+    );
+
+    const dummyActions = {
+      setVoltage: () => {},
+      resetLab: () => {},
+      attachProbeToPin: () => {},
+      setPowerSupplyOutput: () => {},
+      switchTab: () => {},
+    };
+
+    const hilux1gdVoice = parseAndExecuteVoiceCommand('Hilux Fortuner Innova 2.8L 1GD-FTV 2.4L 2GD-FTV pinout', [], dummyActions);
+    assert.equal(hilux1gdVoice.matched, true);
+    assert.ok(hilux1gdVoice.spokenReply.includes('A28') && hilux1gdVoice.spokenReply.includes('B48'));
+
+    const hilux1kdVoice = parseAndExecuteVoiceCommand('Hilux Fortuner Hiace 3.0L 1KD-FTV 2.5L 2KD-FTV pinout', [], dummyActions);
+    assert.equal(hilux1kdVoice.matched, true);
+    assert.ok(hilux1kdVoice.spokenReply.includes('E5-9') && hilux1kdVoice.spokenReply.includes('E6-31'));
+
+    const innova1trVoice = parseAndExecuteVoiceCommand('Innova 2.0L 1TR-FE VVT-i Gasoline pinout', [], dummyActions);
+    assert.equal(innova1trVoice.matched, true);
+    assert.ok(innova1trVoice.spokenReply.includes('A18') && innova1trVoice.spokenReply.includes('B36'));
+
+    const hiace1gdVoice = parseAndExecuteVoiceCommand('Hiace Commuter GL Grandia 2.8L 1GD-FTV pinout', [], dummyActions);
+    assert.equal(hiace1gdVoice.matched, true);
+    assert.ok(hiace1gdVoice.spokenReply.includes('A28') && hiace1gdVoice.spokenReply.includes('B54'));
+
+    const vios1nzVoice = parseAndExecuteVoiceCommand('Vios Yaris 1.5L 1NZ-FE 1.3L 2NZ-FE pinout', [], dummyActions);
+    assert.equal(vios1nzVoice.matched, true);
+    assert.ok(vios1nzVoice.spokenReply.includes('A15') && vios1nzVoice.spokenReply.includes('B19'));
+
+    const vios2nrVoice = parseAndExecuteVoiceCommand('Vios Yaris 1.5L 2NR-FE 1.3L 1NR-FE Dual VVT-i pinout', [], dummyActions);
+    assert.equal(vios2nrVoice.matched, true);
+    assert.ok(vios2nrVoice.spokenReply.includes('A21') && vios2nrVoice.spokenReply.includes('B40'));
+
+    const wigo1krVoice = parseAndExecuteVoiceCommand('Wigo Agya 1.0L 1KR-FE 1KR-VE pinout', [], dummyActions);
+    assert.equal(wigo1krVoice.matched, true);
+    assert.ok(wigo1krVoice.spokenReply.includes('A12') && wigo1krVoice.spokenReply.includes('B28'));
+
+    const avanzaRushVoice = parseAndExecuteVoiceCommand('Avanza Rush 1.5L 2NR-VE 1.3L 1NR-VE pinout', [], dummyActions);
+    assert.equal(avanzaRushVoice.matched, true);
+    assert.ok(avanzaRushVoice.spokenReply.includes('A19') && avanzaRushVoice.spokenReply.includes('B35'));
+
+    const altis1zrVoice = parseAndExecuteVoiceCommand('Corolla Altis 1.6L 1ZR-FE 1.8L 2ZR-FE pinout', [], dummyActions);
+    assert.equal(altis1zrVoice.matched, true);
+    assert.ok(altis1zrVoice.spokenReply.includes('A24') && altis1zrVoice.spokenReply.includes('B42'));
+
+    const ac60TcmVoice = parseAndExecuteVoiceCommand('Fortuner Hilux 6AT TCM Aisin AC60E AC60F pinout', [], dummyActions);
+    assert.equal(ac60TcmVoice.matched, true);
+    assert.ok(ac60TcmVoice.spokenReply.includes('Pin 11') && ac60TcmVoice.spokenReply.includes('Pin 12'));
+
+    const bot = new OfflineDiagnosticChatbot();
+    const botReply = bot.ask('Toyota OEM ECU Bench Test Pinouts Hilux 1GD 1KD Innova 1TR Hiace Vios Wigo Avanza Corolla Altis 6AT TCM AC60');
+    assert.ok(botReply.answer.includes('A28'));
+    assert.ok(botReply.answer.includes('E5-9'));
+    assert.ok(botReply.answer.includes('AC60'));
+  });
 });
+
 

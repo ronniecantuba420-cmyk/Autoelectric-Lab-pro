@@ -24,6 +24,7 @@ import {
   subscribeBenchSessions,
   subscribeDiagnosticLogs,
   syncFordOemPinoutsToDatabase,
+  syncToyotaOemPinoutsToDatabase,
 } from './services/benchStorageService';
 import { useAuth } from './context/AuthContext';
 import {
@@ -89,6 +90,7 @@ export default function App() {
     }
 
     syncFordOemPinoutsToDatabase(user.uid).catch(() => {});
+    syncToyotaOemPinoutsToDatabase(user.uid).catch(() => {});
 
     const unsubLogs = subscribeDiagnosticLogs(
       user.uid,

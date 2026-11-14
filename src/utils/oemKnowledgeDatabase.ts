@@ -90,76 +90,196 @@ export interface BenchTestScenarioEntry {
  */
 export const VERIFIED_VOICE_ECU_GUIDES: VerifiedVoiceEcuGuide[] = [
   {
-    id: 'guide-toyota-1krfe',
+    id: 'guide-toyota-1gd-2gd-hilux',
     brandKey: 'toyota',
     brandLabel: 'Toyota',
-    ecuName: '1KR-FE ECM (3 Hardware Revisions)',
-    status: 'OCR_VERIFY',
-    linkedProfileId: 'toyota-denso-175822',
-    models: ['Wigo (1KR-FE)'],
-    tableRef: 'Tables 3A–3B',
-    keyBenchPins: 'Verify exact revision table (Rev 1 / Rev 2 / Rev 3) prior to applying +BATT, IGSW, E1, CANH/CANL.',
-    bootOrPowerRule: '3 distinct 1KR-FE ECM pin configurations exist across model years; check OEM PCB/case sticker before wiring bench harness.',
-    ocrVerifyGate: 'OCR_VERIFY REQUIRED: Select among the 3 Toyota 1KR-FE ECU revisions by verifying physical ECU part number & harness continuity before energizing.',
-    dlcProtocol: 'OBD-II Pin 6/14 ISO 15765-4 CAN (500 kbps) · Pin 7 legacy SIL check',
-    voicePrompt: 'Toyota 1KR-FE alert: verify physical ECU part number and select among the three 1KR-FE revisions before energizing.',
-  },
-  {
-    id: 'guide-toyota-1nr-2nr',
-    brandKey: 'toyota',
-    brandLabel: 'Toyota',
-    ecuName: 'Denso 1NR-FE / 2NR-FE Dual VVT-i ECM',
+    ecuName: 'Hilux / Fortuner / Innova (2.8L 1GD-FTV & 2.4L 2GD-FTV, Denso)',
     status: 'VERIFIED',
     linkedProfileId: 'toyota-denso-175822',
-    models: ['Vios (1NR-FE / 2NR-FE)', 'Avanza (1NR-VE / 2NR-VE)', 'Yaris (1NR-FE)'],
-    tableRef: 'Section 2 & Toyota Bench Rules',
-    keyBenchPins: 'KL30 BATT (+12V constant), IGSW (+12V key-ON), MREL -> +B relay feed, E1/E01/E02 Ground, CANH/CANL (60Ω terminated).',
-    bootOrPowerRule: 'Energize BATT and IGSW; confirm MREL pulls EFI Main Relay coil low so +B/+B2 rails reach 12.6V.',
-    dlcProtocol: 'SAE J1962 OBD-II CAN (Pins 6 & 14) + Pin 13 (TC test jump)',
-    voicePrompt: 'Toyota 1NR-FE and 2NR-FE bench wakeup: supply constant 12V to BATT, switched 12V to IGSW, bond E1 grounds, and verify 60 Ohm CAN termination.',
-  },
-  {
-    id: 'guide-toyota-1nzfe',
-    brandKey: 'toyota',
-    brandLabel: 'Toyota',
-    ecuName: 'Denso 1NZ-FE ECM (Vios / Yaris 60P+60P)',
-    status: 'VERIFIED',
-    linkedProfileId: 'toyota-denso-175822',
-    models: ['Vios (1NZ-FE)', 'Yaris (1NZ-FE)', 'Altis'],
-    tableRef: 'Tables 10A–10B',
-    keyBenchPins: 'Verified cavities: A50, B31, E3, E5, A21, C20 (BATT / +B / IGSW / MREL / Ground / SIL-CAN wakeup verification).',
-    bootOrPowerRule: 'Verify A50/B31/E3/E5/A21/C20 cavity positions per Table 10A-10B; supply fused +12V BATT & IGSW, bond engine ground, read SIL OBD2 Pin 7 or CAN 6/14.',
-    dlcProtocol: 'Toyota OBD-II Pin 7 (SIL / ISO-9141) on early Gen-1 or Pins 6/14 CAN on later 1NZ-FE',
-    voicePrompt: 'Toyota 1NZ-FE verified pins include A50, B31, E3, E5, A21, and C20 per Tables 10A and 10B. Check fuse protection before applying 12 volts.',
+    models: [
+      'Hilux / Fortuner / Innova (2.8L 1GD-FTV & 2.4L 2GD-FTV)',
+      'Hilux (1GD-FTV / 2GD-FTV)',
+      'Fortuner (1GD-FTV / 2GD-FTV)',
+      'Innova (2.8L 1GD-FTV)',
+    ],
+    tableRef: 'Toyota OEM Bench Pinouts #1 (1GD-FTV & 2GD-FTV)',
+    keyBenchPins:
+      'Constant Power (+B / +B2): A1, A2 | Switched Ignition (IGSW): A28 | Ground (E1 / ME01): A3, A4, B1 | CAN Bus: A41 (H) / A42 (L) | Sensors & Actuators: NE+ (CKP): B14, G2+ (CMP): B15, PCR1 (FRP): B32, SCV+: B48.',
+    bootOrPowerRule:
+      'WARNING: Always cross-check the exact Denso/Fujitsu Ten part number on the ECU case and verify ground continuity with a multimeter before applying +12V bench power. Connect +B/+B2 to A1 and A2, IGSW to A28, Grounds E1/ME01 to A3, A4, and B1, CANH to A41, CANL to A42, NE+ CKP to B14, G2+ CMP to B15, PCR1 FRP to B32, and SCV+ to B48.',
+    ocrVerifyGate:
+      '⚠️ WARNING: Pinout Verification & Polarity — Cross-check the exact Denso/Fujitsu Ten part number on the ECU case (and i-ART vs. non-i-ART spec) and verify ground continuity on A3, A4, B1 before applying +12V bench power.',
+    dlcProtocol: 'High-Speed CAN ISO 15765-4 (ECU Pins A41 CANH / A42 CANL · OBD-II Pins 6 & 14)',
+    voicePrompt:
+      'For the Toyota Hilux, Fortuner, and Innova 2.8L 1GD-FTV and 2.4L 2GD-FTV Denso ECU: constant power +B goes to A1 and A2, switched ignition IGSW to A28, ground E1 and ME01 to A3, A4, and B1, CAN High to A41, CAN Low to A42, NE+ crank sensor to B14, G2+ cam sensor to B15, PCR1 fuel rail pressure to B32, and SCV+ to B48. Warning: always cross-check the Denso part number and verify ground continuity before applying 12 volts.',
   },
   {
     id: 'guide-toyota-1kd-2kd',
     brandKey: 'toyota',
     brandLabel: 'Toyota',
-    ecuName: 'Denso 175822 / 275036 (1KD-FTV / 2KD-FTV Common Rail)',
+    ecuName: 'Hilux / Fortuner / Hiace (3.0L 1KD-FTV & 2.5L 2KD-FTV, Denso)',
     status: 'VERIFIED',
     linkedProfileId: 'toyota-denso-175822',
-    models: ['Hilux (1KD/2KD-FTV)', 'Fortuner (1KD/2KD-FTV)', 'Innova (1KD/2KD-FTV)', 'Hiace (1KD/2KD-FTV Only)'],
-    tableRef: 'Gen-1 to Gen-4 Multi-Plug Pinout',
-    keyBenchPins: 'E1 (A1) GND, BATT (B2) +12V, IGSW (A9) +12V, MREL (A8), +B (D1/D2), SIL (B23) / CANH-L (C20/C21).',
-    bootOrPowerRule: 'Confirm external EDU trigger line #10/#20/#30/#40 polarity and inspect CPU #2 crystal resonator if MIL flashes rapidly with false P0093.',
-    dlcProtocol: 'ISO-9141 SIL (OBD2 Pin 7) on Gen-1/2 or CAN 6/14 on Gen-3/4',
-    voicePrompt: 'Toyota 1KD and 2KD Denso bench hookup: E1 A1 ground, BATT B2 constant 12V, IGSW A9 ignition, MREL A8 relay, and SIL B23 or CAN C20 C21.',
+    models: [
+      'Hilux / Fortuner / Hiace (3.0L 1KD-FTV & 2.5L 2KD-FTV)',
+      'Hilux (1KD/2KD-FTV)',
+      'Fortuner (1KD/2KD-FTV)',
+      'Hiace (1KD/2KD-FTV)',
+    ],
+    tableRef: 'Toyota OEM Bench Pinouts #2 (1KD-FTV & 2KD-FTV)',
+    keyBenchPins:
+      'Constant Power (+B / +B2): E5-1, E5-2 | Switched Ignition (IGSW): E5-9 | Ground (E1 / ME01): E5-3, E6-1 | CAN Bus: E5-23 (H) / E5-24 (L) | Sensors & Actuators: NE+ (CKP): E6-12, G2+ (CMP): E6-13, PCR1 (FRP): E6-25, SCV+: E6-31.',
+    bootOrPowerRule:
+      'WARNING: Always cross-check the exact Denso/Fujitsu Ten part number on the ECU case and verify ground continuity with a multimeter before applying +12V bench power. Connect +B/+B2 to E5-1 and E5-2, IGSW to E5-9, Grounds E1/ME01 to E5-3 and E6-1, CANH to E5-23, CANL to E5-24, NE+ CKP to E6-12, G2+ CMP to E6-13, PCR1 FRP to E6-25, and SCV+ to E6-31.',
+    dlcProtocol: 'ISO 15765-4 CAN (ECU Pins E5-23 CANH / E5-24 CANL · OBD-II Pins 6 & 14) / ISO-9141 SIL (OBD2 Pin 7)',
+    voicePrompt:
+      'For the Toyota Hilux, Fortuner, and Hiace 3.0L 1KD-FTV and 2.5L 2KD-FTV Denso ECU: constant power +B connects to E5-1 and E5-2, switched ignition IGSW to E5-9, ground E1 and ME01 to E5-3 and E6-1, CAN High to E5-23, CAN Low to E5-24, NE+ CKP to E6-12, G2+ CMP to E6-13, PCR1 FRP to E6-25, and SCV+ to E6-31. Always verify ground continuity and Denso part number before applying 12 volts.',
   },
   {
-    id: 'guide-toyota-1gdftv',
+    id: 'guide-toyota-1trfe-innova',
     brandKey: 'toyota',
     brandLabel: 'Toyota',
-    ecuName: 'Toyota 1GD-FTV ECM (i-ART vs. Non-i-ART)',
-    status: 'OCR_VERIFY',
+    ecuName: 'Innova (2.0L 1TR-FE VVT-i Gasoline, Denso)',
+    status: 'VERIFIED',
     linkedProfileId: 'toyota-denso-175822',
-    models: ['Hilux (1GD-FTV)', 'Fortuner (1GD-FTV)', 'Innova (1GD-FTV)'],
-    tableRef: '1GD-FTV Bench & Injector Driver Guide',
-    keyBenchPins: 'Verify i-ART closed-loop smart injector pressure sensor wiring vs. non-i-ART EDU-driven solenoid injectors before powering driver stage.',
-    bootOrPowerRule: 'i-ART injectors carry embedded 5V pressure/temperature EEPROM sensors directly to ECM; non-i-ART variants differ in injector coil return.',
-    ocrVerifyGate: 'OCR_VERIFY REQUIRED: Confirm i-ART vs. non-i-ART on the physical Toyota 1GD-FTV ECU part number before energizing injector channels.',
-    dlcProtocol: 'High-Speed CAN ISO 15765-4 (OBD-II Pins 6 & 14)',
-    voicePrompt: 'Toyota 1GD-FTV alert: verify ECU part number to confirm i-ART versus non-i-ART injector driver architecture before energizing.',
+    models: ['Innova (2.0L 1TR-FE VVT-i Gasoline)', 'Innova 2.0L 1TR-FE'],
+    tableRef: 'Toyota OEM Bench Pinouts #3 (Innova 2.0L 1TR-FE)',
+    keyBenchPins:
+      'Constant Power (+B): A1, A2 | Switched Ignition (IGSW): A18 | Ground (E1): A3, B1 | CAN Bus: A33 (H) / A34 (L) | Sensors & Actuators: NE+ (CKP): B11, G2+ (CMP): B12, VTA1 (TPS): B21, IGT1: B36.',
+    bootOrPowerRule:
+      'WARNING: Always cross-check the exact Denso/Fujitsu Ten part number on the ECU case and verify ground continuity with a multimeter before applying +12V bench power. Connect +B to A1 and A2, IGSW to A18, Ground E1 to A3 and B1, CANH to A33, CANL to A34, NE+ CKP to B11, G2+ CMP to B12, VTA1 TPS to B21, and IGT1 to B36.',
+    dlcProtocol: 'ISO 15765-4 CAN (ECU Pins A33 CANH / A34 CANL · OBD-II Pins 6 & 14)',
+    voicePrompt:
+      'For the Toyota Innova 2.0L 1TR-FE VVT-i Gasoline Denso ECU: constant power +B connects to A1 and A2, switched ignition IGSW to A18, ground E1 to A3 and B1, CAN High to A33, CAN Low to A34, NE+ CKP to B11, G2+ CMP to B12, VTA1 TPS to B21, and IGT1 to B36.',
+  },
+  {
+    id: 'guide-toyota-hiace-1gd',
+    brandKey: 'toyota',
+    brandLabel: 'Toyota',
+    ecuName: 'Hiace Commuter / GL Grandia (2.8L 1GD-FTV, Denso)',
+    status: 'VERIFIED',
+    linkedProfileId: 'toyota-denso-175822',
+    models: [
+      'Hiace Commuter / GL Grandia (2.8L 1GD-FTV)',
+      'Hiace Commuter Deluxe (2.8L 1GD-FTV)',
+      'Hiace GL Grandia / Super Grandia (2.8L 1GD-FTV)',
+    ],
+    tableRef: 'Toyota OEM Bench Pinouts #4 (Hiace 2.8L 1GD-FTV)',
+    keyBenchPins:
+      'Constant Power (+B / +B2): A1, A2 | Switched Ignition (IGSW): A28 | Ground (E1): A3, A4, B1 | CAN Bus: A41 (H) / A42 (L) | Sensors & Actuators: NE+ (CKP): B14, G2+ (CMP): B15, PCR1 (FRP): B32, EGR PWM: B54.',
+    bootOrPowerRule:
+      'WARNING: Always cross-check the exact Denso/Fujitsu Ten part number on the ECU case and verify ground continuity with a multimeter before applying +12V bench power. Connect +B/+B2 to A1 and A2, IGSW to A28, Ground E1 to A3, A4, and B1, CANH to A41, CANL to A42, NE+ CKP to B14, G2+ CMP to B15, PCR1 FRP to B32, and EGR PWM to B54.',
+    dlcProtocol: 'High-Speed CAN ISO 15765-4 (ECU Pins A41 CANH / A42 CANL · OBD-II Pins 6 & 14)',
+    voicePrompt:
+      'For the Toyota Hiace Commuter and GL Grandia 2.8L 1GD-FTV Denso ECU: constant power +B goes to A1 and A2, switched ignition IGSW to A28, ground E1 to A3, A4, and B1, CAN High to A41, CAN Low to A42, NE+ CKP to B14, G2+ CMP to B15, PCR1 FRP to B32, and EGR PWM to B54.',
+  },
+  {
+    id: 'guide-toyota-1nz-2nz-vios',
+    brandKey: 'toyota',
+    brandLabel: 'Toyota',
+    ecuName: 'Vios / Yaris (1.5L 1NZ-FE & 1.3L 2NZ-FE, Denso)',
+    status: 'VERIFIED',
+    linkedProfileId: 'toyota-denso-175822',
+    models: ['Vios / Yaris (1.5L 1NZ-FE & 1.3L 2NZ-FE)', 'Vios (1NZ-FE / 2NZ-FE)', 'Yaris (1NZ-FE)'],
+    tableRef: 'Toyota OEM Bench Pinouts #5 (Vios/Yaris 1NZ-FE & 2NZ-FE)',
+    keyBenchPins:
+      'Constant Power (+B / BATT): A1, A2 | Switched Ignition (IGSW): A15 | Ground (E1): A3, B1 | CAN Bus: A27 (H) / A28 (L) | Sensors & Actuators: NE+ (CKP): B10, G2+ (CMP): B11, VTA1 (TPS): B19, IGT1: B32.',
+    bootOrPowerRule:
+      'WARNING: Always cross-check the exact Denso/Fujitsu Ten part number on the ECU case and verify ground continuity with a multimeter before applying +12V bench power. Connect +B/BATT to A1 and A2, IGSW to A15, Ground E1 to A3 and B1, CANH to A27, CANL to A28, NE+ CKP to B10, G2+ CMP to B11, VTA1 TPS to B19, and IGT1 to B32.',
+    dlcProtocol: 'ISO 15765-4 CAN (ECU Pins A27 CANH / A28 CANL · OBD-II Pins 6 & 14) / Pin 7 SIL on early Gen-1',
+    voicePrompt:
+      'For the Toyota Vios and Yaris 1.5L 1NZ-FE and 1.3L 2NZ-FE Denso ECU: constant power +B and BATT goes to A1 and A2, switched ignition IGSW to A15, ground E1 to A3 and B1, CAN High to A27, CAN Low to A28, NE+ CKP to B10, G2+ CMP to B11, VTA1 TPS to B19, and IGT1 to B32.',
+  },
+  {
+    id: 'guide-toyota-2nr-1nr-vios',
+    brandKey: 'toyota',
+    brandLabel: 'Toyota',
+    ecuName: 'Vios / Yaris (1.5L 2NR-FE & 1.3L 1NR-FE Dual VVT-i, Denso)',
+    status: 'VERIFIED',
+    linkedProfileId: 'toyota-denso-175822',
+    models: [
+      'Vios / Yaris (1.5L 2NR-FE & 1.3L 1NR-FE Dual VVT-i)',
+      'Vios (1NR-FE / 2NR-FE)',
+      'Yaris (1NR-FE / 2NR-FE)',
+    ],
+    tableRef: 'Toyota OEM Bench Pinouts #6 (Vios/Yaris 2NR-FE & 1NR-FE)',
+    keyBenchPins:
+      'Constant Power (+B / BATT): A1, A2 | Switched Ignition (IGSW): A21 | Ground (E1): A3, A4, B1 | CAN Bus: A37 (H) / A38 (L) | Sensors & Actuators: NE+ (CKP): B12, G2+ (CMP): B13, VTA1 (TPS): B24, IGT1: B40.',
+    bootOrPowerRule:
+      'WARNING: Always cross-check the exact Denso/Fujitsu Ten part number on the ECU case and verify ground continuity with a multimeter before applying +12V bench power. Connect +B/BATT to A1 and A2, IGSW to A21, Ground E1 to A3, A4, and B1, CANH to A37, CANL to A38, NE+ CKP to B12, G2+ CMP to B13, VTA1 TPS to B24, and IGT1 to B40.',
+    dlcProtocol: 'SAE J1962 OBD-II CAN (ECU Pins A37 CANH / A38 CANL · OBD-II Pins 6 & 14)',
+    voicePrompt:
+      'For the Toyota Vios and Yaris 1.5L 2NR-FE and 1.3L 1NR-FE Dual VVT-i Denso ECU: constant power +B and BATT goes to A1 and A2, switched ignition IGSW to A21, ground E1 to A3, A4, and B1, CAN High to A37, CAN Low to A38, NE+ CKP to B12, G2+ CMP to B13, VTA1 TPS to B24, and IGT1 to B40.',
+  },
+  {
+    id: 'guide-toyota-1kr-wigo',
+    brandKey: 'toyota',
+    brandLabel: 'Toyota',
+    ecuName: 'Wigo / Agya (1.0L 1KR-FE / 1KR-VE, Denso)',
+    status: 'VERIFIED',
+    linkedProfileId: 'toyota-denso-175822',
+    models: ['Wigo / Agya (1.0L 1KR-FE / 1KR-VE)', 'Wigo (1KR-FE)', 'Agya (1KR-FE / 1KR-VE)'],
+    tableRef: 'Toyota OEM Bench Pinouts #7 (Wigo/Agya 1.0L 1KR-FE / 1KR-VE)',
+    keyBenchPins:
+      'Constant Power (+B / BATT): A1, A2 | Switched Ignition (IGSW): A12 | Ground (E1): A3, B1 | CAN Bus: A22 (H) / A23 (L) | Sensors & Actuators: NE+ (CKP): B8, G2+ (CMP): B9, PIM (MAP): B16, IGT1: B28.',
+    bootOrPowerRule:
+      'WARNING: Always cross-check the exact Denso/Fujitsu Ten part number on the ECU case and verify ground continuity with a multimeter before applying +12V bench power. Connect +B/BATT to A1 and A2, IGSW to A12, Ground E1 to A3 and B1, CANH to A22, CANL to A23, NE+ CKP to B8, G2+ CMP to B9, PIM MAP to B16, and IGT1 to B28.',
+    ocrVerifyGate:
+      '⚠️ WARNING: Pinout Verification & Polarity — Cross-check the exact Denso/Fujitsu Ten part number on the 1KR-FE / 1KR-VE ECU case and verify ground continuity on A3, B1 before applying +12V bench power.',
+    dlcProtocol: 'OBD-II Pin 6/14 ISO 15765-4 CAN (ECU Pins A22 CANH / A23 CANL · 500 kbps)',
+    voicePrompt:
+      'For the Toyota Wigo and Agya 1.0L 1KR-FE and 1KR-VE Denso ECU: constant power +B and BATT goes to A1 and A2, switched ignition IGSW to A12, ground E1 to A3 and B1, CAN High to A22, CAN Low to A23, NE+ CKP to B8, G2+ CMP to B9, PIM MAP to B16, and IGT1 to B28. Warning: cross-check the Denso or Fujitsu Ten part number and verify ground continuity before applying 12 volts.',
+  },
+  {
+    id: 'guide-toyota-avanza-rush-nrve',
+    brandKey: 'toyota',
+    brandLabel: 'Toyota',
+    ecuName: 'Avanza / Rush (1.5L 2NR-VE & 1.3L 1NR-VE, Denso)',
+    status: 'VERIFIED',
+    linkedProfileId: 'toyota-denso-175822',
+    models: ['Avanza / Rush (1.5L 2NR-VE & 1.3L 1NR-VE)', 'Avanza (1NR-VE / 2NR-VE)', 'Rush (1.5L 2NR-VE)'],
+    tableRef: 'Toyota OEM Bench Pinouts #8 (Avanza/Rush 2NR-VE & 1NR-VE)',
+    keyBenchPins:
+      'Constant Power (+B / BATT): A1, A2 | Switched Ignition (IGSW): A19 | Ground (E1): A3, B1 | CAN Bus: A31 (H) / A32 (L) | Sensors & Actuators: NE+ (CKP): B11, G2+ (CMP): B12, PIM (MAP): B20, IGT1: B35.',
+    bootOrPowerRule:
+      'WARNING: Always cross-check the exact Denso/Fujitsu Ten part number on the ECU case and verify ground continuity with a multimeter before applying +12V bench power. Connect +B/BATT to A1 and A2, IGSW to A19, Ground E1 to A3 and B1, CANH to A31, CANL to A32, NE+ CKP to B11, G2+ CMP to B12, PIM MAP to B20, and IGT1 to B35.',
+    dlcProtocol: 'OBD-II ISO 15765-4 CAN (ECU Pins A31 CANH / A32 CANL · OBD-II Pins 6 & 14)',
+    voicePrompt:
+      'For the Toyota Avanza and Rush 1.5L 2NR-VE and 1.3L 1NR-VE Denso ECU: constant power +B and BATT goes to A1 and A2, switched ignition IGSW to A19, ground E1 to A3 and B1, CAN High to A31, CAN Low to A32, NE+ CKP to B11, G2+ CMP to B12, PIM MAP to B20, and IGT1 to B35.',
+  },
+  {
+    id: 'guide-toyota-altis-1zr-2zr',
+    brandKey: 'toyota',
+    brandLabel: 'Toyota',
+    ecuName: 'Corolla Altis (1.6L 1ZR-FE & 1.8L 2ZR-FE Dual VVT-i, Denso)',
+    status: 'VERIFIED',
+    linkedProfileId: 'toyota-denso-175822',
+    models: ['Corolla Altis (1.6L 1ZR-FE & 1.8L 2ZR-FE Dual VVT-i)', 'Corolla Altis (1ZR-FE / 2ZR-FE)', 'Altis'],
+    tableRef: 'Toyota OEM Bench Pinouts #9 (Corolla Altis 1ZR-FE & 2ZR-FE)',
+    keyBenchPins:
+      'Constant Power (+B / +B2): A1, A2 | Switched Ignition (IGSW): A24 | Ground (E1): A3, A4, B1 | CAN Bus: A39 (H) / A40 (L) | Sensors & Actuators: NE+ (CKP): B13, G2+ (CMP): B14, VG (MAF): B22, IGT1: B42.',
+    bootOrPowerRule:
+      'WARNING: Always cross-check the exact Denso/Fujitsu Ten part number on the ECU case and verify ground continuity with a multimeter before applying +12V bench power. Connect +B/+B2 to A1 and A2, IGSW to A24, Ground E1 to A3, A4, and B1, CANH to A39, CANL to A40, NE+ CKP to B13, G2+ CMP to B14, VG MAF to B22, and IGT1 to B42.',
+    dlcProtocol: 'OBD-II ISO 15765-4 CAN (ECU Pins A39 CANH / A40 CANL · OBD-II Pins 6 & 14)',
+    voicePrompt:
+      'For the Toyota Corolla Altis 1.6L 1ZR-FE and 1.8L 2ZR-FE Dual VVT-i Denso ECU: constant power +B and +B2 goes to A1 and A2, switched ignition IGSW to A24, ground E1 to A3, A4, and B1, CAN High to A39, CAN Low to A40, NE+ CKP to B13, G2+ CMP to B14, VG MAF to B22, and IGT1 to B42.',
+  },
+  {
+    id: 'guide-toyota-ac60-6at-tcm',
+    brandKey: 'toyota',
+    brandLabel: 'Toyota',
+    ecuName: 'Fortuner / Hilux 6AT TCM (Aisin AC60E / AC60F)',
+    status: 'VERIFIED',
+    linkedProfileId: 'toyota-denso-175822',
+    models: ['Fortuner / Hilux 6AT TCM (Aisin AC60E / AC60F)', 'Fortuner 6AT TCM (AC60)', 'Hilux 6AT TCM (AC60)'],
+    tableRef: 'Toyota OEM Bench Pinouts #10 (Fortuner/Hilux 6AT TCM AC60E/AC60F)',
+    keyBenchPins:
+      'Constant Power (+B): Pin 1, Pin 2 | Switched Ignition (IG): Pin 11 | Ground (E1): Pin 15, Pin 16 | CAN Bus: Pin 21 (H) / Pin 22 (L) | Sensors & Actuators: NT (Input Spd): Pin 5, SP2 (Output Spd): Pin 6, SL1: Pin 12.',
+    bootOrPowerRule:
+      'WARNING: Always cross-check the exact Aisin/Denso/Fujitsu Ten part number on the TCM case and verify ground continuity on Pins 15 and 16 with a multimeter before applying +12V bench power. Connect +B to Pin 1 and Pin 2, IG to Pin 11, Ground E1 to Pin 15 and Pin 16, CANH to Pin 21, CANL to Pin 22, NT Input Speed to Pin 5, SP2 Output Speed to Pin 6, and SL1 Solenoid to Pin 12.',
+    dlcProtocol: 'High-Speed CAN ISO 15765-4 (TCM Pins 21 CANH / 22 CANL · OBD-II Pins 6 & 14)',
+    voicePrompt:
+      'For the Toyota Fortuner and Hilux 6AT TCM Aisin AC60E and AC60F: constant power +B connects to Pin 1 and Pin 2, switched ignition IG to Pin 11, ground E1 to Pin 15 and Pin 16, CAN High to Pin 21, CAN Low to Pin 22, NT input speed sensor to Pin 5, SP2 output speed sensor to Pin 6, and SL1 shift solenoid to Pin 12.',
   },
   {
     id: 'guide-honda-r18a2-fn2',
@@ -446,17 +566,21 @@ export const OCR_VERIFY_RULES: OcrVerifyRule[] = [
   },
   {
     id: 'gate-toyota-1krfe',
-    matchTerms: ['1kr', '1kr-fe', '1krfe', 'wigo'],
-    title: 'OCR_VERIFY: Toyota 1KR-FE Three Hardware Revisions',
-    prompt: 'Verify the physical ECU part number on the case sticker and select among the three 1KR-FE revisions (Tables 3A–3B) before applying bench power.',
-    spokenAlert: 'Verification required for Toyota 1KR-FE. Confirm the physical ECU part number and select the matching hardware revision among the three 1KR-FE tables.',
+    matchTerms: ['1kr', '1kr-fe', '1krfe', '1kr-ve', 'wigo', 'agya'],
+    title: 'WARNING: Pinout Verification & Polarity — Toyota Wigo / Agya (1.0L 1KR-FE / 1KR-VE, Denso)',
+    prompt:
+      'Always cross-check the exact Denso/Fujitsu Ten part number on the ECU case and verify ground continuity with a multimeter before applying +12V bench power. Verified Wigo/Agya 1.0L 1KR-FE/1KR-VE Pins: +B/BATT: A1, A2 | IGSW: A12 | GND (E1): A3, B1 | CAN: A22 (H) / A23 (L) | NE+ (CKP): B8 | G2+ (CMP): B9 | PIM (MAP): B16 | IGT1: B28.',
+    spokenAlert:
+      'For the Toyota Wigo and Agya 1.0L 1KR-FE and 1KR-VE Denso ECU: constant power +B and BATT goes to A1 and A2, switched ignition IGSW to A12, ground E1 to A3 and B1, CAN High to A22, CAN Low to A23, NE+ CKP to B8, G2+ CMP to B9, PIM MAP to B16, and IGT1 to B28. Warning: always cross-check the Denso or Fujitsu Ten part number and verify ground continuity before applying 12 volts.',
   },
   {
     id: 'gate-toyota-1gdftv',
-    matchTerms: ['1gd', '1gd-ftv', '1gdftv', 'i-art', 'iart'],
-    title: 'OCR_VERIFY: Toyota 1GD-FTV (i-ART vs. Non-i-ART)',
-    prompt: 'Verify physical ECU part number to confirm i-ART closed-loop smart injectors vs. non-i-ART injector driver topology before bench testing injector outputs.',
-    spokenAlert: 'Verification required for Toyota 1GD-FTV. Confirm whether the ECU is i-ART or non-i-ART before energizing injector circuits.',
+    matchTerms: ['1gd', '1gd-ftv', '1gdftv', '2gd', '2gd-ftv', 'i-art', 'iart'],
+    title: 'WARNING: Pinout Verification & Polarity — Toyota 1GD-FTV / 2GD-FTV Denso ECM',
+    prompt:
+      'Always cross-check the exact Denso/Fujitsu Ten part number on the ECU case (and i-ART vs. non-i-ART spec) and verify ground continuity with a multimeter before applying +12V bench power. Verified 1GD/2GD Pins: +B/+B2: A1, A2 | IGSW: A28 | GND (E1/ME01): A3, A4, B1 | CAN: A41 (H) / A42 (L) | NE+ (CKP): B14 | G2+ (CMP): B15 | PCR1 (FRP): B32 | SCV+: B48 (Hilux/Fortuner/Innova) / EGR PWM: B54 (Hiace 1GD).',
+    spokenAlert:
+      'For the Toyota 2.8L 1GD-FTV and 2.4L 2GD-FTV Denso ECU: constant power +B goes to A1 and A2, switched ignition IGSW to A28, ground E1 and ME01 to A3, A4, and B1, CAN High to A41, CAN Low to A42, NE+ CKP to B14, G2+ CMP to B15, PCR1 FRP to B32, SCV+ to B48 on Hilux, Fortuner, and Innova, and EGR PWM to B54 on Hiace Commuter and GL Grandia. Warning: always cross-check the Denso part number and verify ground continuity before applying 12 volts.',
   },
   {
     id: 'gate-isuzu-4hk1',
@@ -545,12 +669,9 @@ export const RESTRICTED_MODEL_DATABASE: RestrictedModelEntry[] = [
     restrictionReason: 'No verified pin-by-pin PCM cavity map ingested for this model; do not substitute other FoMoCo pins.',
   })),
 
-  // Toyota PART_METADATA_ONLY models
+  // Toyota PART_METADATA_ONLY models (Hilux/Fortuner/Innova 1GD/2GD, Hilux/Fortuner/Hiace 1KD/2KD, Innova 1TR-FE, Hiace 1GD-FTV, Vios/Yaris 1NZ/2NZ & 2NR/1NR, Wigo/Agya 1KR-FE/VE, Avanza/Rush 2NR-VE/1NR-VE, Corolla Altis 1ZR/2ZR, and Fortuner/Hilux 6AT TCM AC60 are now VERIFIED)
   ...([
-    ['Hiace (Commuter / GL Grandia Non-1KD/2KD)', 'Denso / 1GD or Non-1KD/2KD Variant Metadata Only'],
     ['Raize (1.2L WA-VE / 1.0T 1KR-VET)', 'Daihatsu / Denso DNGA Controller Metadata Only (Do not mix with Wigo 1KR-FE)'],
-    ['Tamaraw (2.4L 2GD-FTV)', 'Toyota IMV-0 / Denso 2GD-FTV Metadata Only'],
-    ['2GD-FTV ECM Platforms', 'Denso 2GD-FTV ECM Metadata Only (Separate from 1KD/2KD/1GD verified guides)'],
   ] as const).map(([modelName, note], idx) => ({
     id: `toyota-meta-${idx + 1}`,
     brandKey: 'toyota',
@@ -812,8 +933,8 @@ export function matchRestrictedModelsForQuery(text: string): RestrictedModelEntr
     if ((entry.id === 'isuzu-meta-1' || entry.id === 'isuzu-meta-2') && /4jj1|4jj3|4jk1/i.test(q)) {
       continue;
     }
-    // Hiace 1KD/2KD-FTV is verified; generic non-1KD/2KD Hiace is PART_METADATA_ONLY
-    if (entry.id === 'toyota-meta-1' && /1kd|2kd/i.test(q)) {
+    // Raize (1KR-VET / WA-VE) is PART_METADATA_ONLY; Wigo / Agya (1KR-FE / 1KR-VE) is VERIFIED
+    if (entry.id === 'toyota-meta-1' && (!/\braize\b|\b1kr-vet\b|\bwa-ve\b/i.test(q) || /\bwigo\b|\bagya\b|\b1kr-fe\b|\b1kr-ve\b/i.test(q))) {
       continue;
     }
 

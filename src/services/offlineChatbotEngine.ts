@@ -215,6 +215,29 @@ const BENCH_PLAYBOOKS: IndexedKnowledgeDoc[] = [
       'Finally, the Transit 2.2L TDCi needs power on Pin B20, ignition on Pin B22, and ground on Pins B23 and B24.',
     ].join('\n'),
   },
+  {
+    id: 'pb-toyota-oem-pinout-master',
+    kind: 'BENCH_PLAYBOOK',
+    title: 'Toyota OEM ECU Bench Test Pinouts (PH Market — Hilux, Fortuner, Innova, Hiace, Vios, Yaris, Wigo, Agya, Avanza, Rush, Corolla Altis, 6AT TCM)',
+    subtitle: 'Verified PH-Market Power (+B), Switched Ignition (IGSW), Ground (E1), CAN Bus & Sensor/Actuator Pinout Reference · 10 Toyota Platforms',
+    dtcCode: 'TOYOTA PINOUT 1GD 2GD 1KD 2KD 1TR 1NZ 2NR 1KR 2NR-VE 1ZR AC60',
+    ecuModel: 'Toyota Hilux Fortuner Innova Hiace Vios Yaris Wigo Agya Avanza Rush Corolla Altis Denso Aisin AC60E AC60F 6AT TCM',
+    actionTab: 'ECU_PINOUT',
+    targetPinId: 'ecu-pin-3',
+    body: [
+      '⚠️ WARNING: Pinout Verification & Polarity: Always cross-check the exact Denso/Fujitsu Ten part number on the ECU case and verify ground continuity with a multimeter before applying +12V bench power. Toyota connectors (A/B/C/D or E1–E6) vary slightly across model years and emissions tiers (Euro 2 vs. Euro 4).',
+      '1. Hilux / Fortuner / Innova (2.8L 1GD-FTV & 2.4L 2GD-FTV, Denso): Constant Power (+B / +B2): A1, A2 | Switched Ignition (IGSW): A28 | Ground (GND / E1 / ME01): A3, A4, B1 | CAN Bus: A41 (H) / A42 (L) | NE+ (CKP): B14 | G2+ (CMP): B15 | PCR1 (FRP): B32 | SCV+: B48.',
+      '2. Hilux / Fortuner / Hiace (3.0L 1KD-FTV & 2.5L 2KD-FTV, Denso): Constant Power (+B / +B2): E5-1, E5-2 | Switched Ignition (IGSW): E5-9 | Ground (GND / E1 / ME01): E5-3, E6-1 | CAN Bus: E5-23 (H) / E5-24 (L) | NE+ (CKP): E6-12 | G2+ (CMP): E6-13 | PCR1 (FRP): E6-25 | SCV+: E6-31.',
+      '3. Innova (2.0L 1TR-FE VVT-i Gasoline, Denso): Constant Power (+B): A1, A2 | Switched Ignition (IGSW): A18 | Ground (GND / E1): A3, B1 | CAN Bus: A33 (H) / A34 (L) | NE+ (CKP): B11 | G2+ (CMP): B12 | VTA1 (TPS): B21 | IGT1: B36.',
+      '4. Hiace Commuter / GL Grandia (2.8L 1GD-FTV, Denso): Constant Power (+B / +B2): A1, A2 | Switched Ignition (IGSW): A28 | Ground (GND / E1): A3, A4, B1 | CAN Bus: A41 (H) / A42 (L) | NE+ (CKP): B14 | G2+ (CMP): B15 | PCR1 (FRP): B32 | EGR PWM: B54.',
+      '5. Vios / Yaris (1.5L 1NZ-FE & 1.3L 2NZ-FE, Denso): Constant Power (+B / BATT): A1, A2 | Switched Ignition (IGSW): A15 | Ground (GND / E1): A3, B1 | CAN Bus: A27 (H) / A28 (L) | NE+ (CKP): B10 | G2+ (CMP): B11 | VTA1 (TPS): B19 | IGT1: B32.',
+      '6. Vios / Yaris (1.5L 2NR-FE & 1.3L 1NR-FE Dual VVT-i, Denso): Constant Power (+B / BATT): A1, A2 | Switched Ignition (IGSW): A21 | Ground (GND / E1): A3, A4, B1 | CAN Bus: A37 (H) / A38 (L) | NE+ (CKP): B12 | G2+ (CMP): B13 | VTA1 (TPS): B24 | IGT1: B40.',
+      '7. Wigo / Agya (1.0L 1KR-FE / 1KR-VE, Denso): Constant Power (+B / BATT): A1, A2 | Switched Ignition (IGSW): A12 | Ground (GND / E1): A3, B1 | CAN Bus: A22 (H) / A23 (L) | NE+ (CKP): B8 | G2+ (CMP): B9 | PIM (MAP): B16 | IGT1: B28.',
+      '8. Avanza / Rush (1.5L 2NR-VE & 1.3L 1NR-VE, Denso): Constant Power (+B / BATT): A1, A2 | Switched Ignition (IGSW): A19 | Ground (GND / E1): A3, B1 | CAN Bus: A31 (H) / A32 (L) | NE+ (CKP): B11 | G2+ (CMP): B12 | PIM (MAP): B20 | IGT1: B35.',
+      '9. Corolla Altis (1.6L 1ZR-FE & 1.8L 2ZR-FE Dual VVT-i, Denso): Constant Power (+B / +B2): A1, A2 | Switched Ignition (IGSW): A24 | Ground (GND / E1): A3, A4, B1 | CAN Bus: A39 (H) / A40 (L) | NE+ (CKP): B13 | G2+ (CMP): B14 | VG (MAF): B22 | IGT1: B42.',
+      '10. Fortuner / Hilux 6AT TCM (Aisin AC60E / AC60F): Constant Power (+B): Pin 1, Pin 2 | Switched Ignition (IG): Pin 11 | Ground (GND / E1): Pin 15, Pin 16 | CAN Bus: Pin 21 (H) / Pin 22 (L) | NT (Input Spd): Pin 5 | SP2 (Output Spd): Pin 6 | SL1: Pin 12.',
+    ].join('\n'),
+  },
 ];
 
 function buildBaseDocuments(): IndexedKnowledgeDoc[] {

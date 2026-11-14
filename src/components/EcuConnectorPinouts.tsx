@@ -25,6 +25,7 @@ import { OemConnectorDiagram } from './OemConnectorDiagram';
 import { useAuth } from '../context/AuthContext';
 import {
   FORD_OEM_PINOUTS_SUMMARY_TEXT,
+  TOYOTA_OEM_PINOUTS_SUMMARY_TEXT,
   saveDiagnosticLog,
 } from '../services/benchStorageService';
 
@@ -278,6 +279,8 @@ export const EcuConnectorPinouts: React.FC<EcuConnectorPinoutsProps> = ({
       const summary =
         activeBrand.id === 'ford-fomoco-sid208'
           ? `${FORD_OEM_PINOUTS_SUMMARY_TEXT}\n\nChecklist:\n${checklistLines}\n\nPinouts:\n${pinLines}`
+          : activeBrand.id === 'toyota-denso-175822'
+          ? `${TOYOTA_OEM_PINOUTS_SUMMARY_TEXT}\n\nChecklist:\n${checklistLines}\n\nPinouts:\n${pinLines}`
           : `${activeBrand.description}\nVehicles: ${activeBrand.popularVehiclesInPH}\n\nChecklist:\n${checklistLines}\n\nPinouts:\n${pinLines}`;
 
       await saveDiagnosticLog(user.uid, {
