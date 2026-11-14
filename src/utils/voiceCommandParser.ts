@@ -248,20 +248,87 @@ export function parseAndExecuteVoiceCommand(
     };
   }
 
-  // 9. Verified Voice-Ready ECU Bench Guide Match (e.g. "1NZ-FE", "SID209", "CPEGD2", "4D56", "QR25DE", "OBD2A")
-  const guideStopWords = new Set(['denso', 'honda', 'toyota', 'nissan', 'ford', 'hyundai', 'isuzu', 'suzuki', 'mitsubishi', 'keihin', 'hitachi', 'fomoco', 'continental', 'ecm', 'ecu', 'bench', 'pins', 'grid', 'boot', 'protocol', 'dual', 'vvt-i', 'common', 'rail', 'only', 'trucks', 'revisions', 'hardware', '2014', 'legacy', 'euro-5', 'euro-4']);
-  const matchedGuide = VERIFIED_VOICE_ECU_GUIDES.find((g) => {
-    const tokens = [
-      ...g.ecuName.toLowerCase().split(/[\s/,()[\]]+/),
-      ...g.models.join(' ').toLowerCase().split(/[\s/,()[\]]+/),
-    ].filter((t) => t.length >= 3 && !guideStopWords.has(t));
-    return tokens.some((tok) => text.includes(tok));
-  });
-  if (matchedGuide && /(?:pin|pinout|bench|boot|guide|wakeup|wake\s*up|ecu)/i.test(text)) {
+  // 9. Verified Voice-Ready ECU Bench Guide Match (e.g. "Ranger T6", "EcoBlue CBR", "EcoSport 1.5L", "Focus GDI", "PowerShift TCM", "Territory 1.5L", "Explorer", "Transit 2.2L", "1NZ-FE", "SID209")
+  const guideStopWords = new Set([
+    'denso',
+    'honda',
+    'toyota',
+    'nissan',
+    'ford',
+    'hyundai',
+    'isuzu',
+    'suzuki',
+    'mitsubishi',
+    'keihin',
+    'hitachi',
+    'fomoco',
+    'continental',
+    'ecm',
+    'ecu',
+    'pcm',
+    'bench',
+    'pins',
+    'grid',
+    'boot',
+    'protocol',
+    'dual',
+    'vvt-i',
+    'common',
+    'rail',
+    'only',
+    'trucks',
+    'revisions',
+    'hardware',
+    '2014',
+    'legacy',
+    'euro-5',
+    'euro-4',
+    'and',
+    'the',
+    'for',
+    'with',
+    'connector',
+    'models',
+  ]);
+  const allowedShortTokens = new Set(['t6', 'na', 'ph']);
+
+  let bestGuide: (typeof VERIFIED_VOICE_ECU_GUIDES)[number] | undefined;
+  let bestScore = 0;
+
+  const queryWords = new Set(text.split(/[\s/,()[\]&+-]+/).filter(Boolean));
+
+  for (const g of VERIFIED_VOICE_ECU_GUIDES) {
+    const rawTokens = [
+      ...g.ecuName.toLowerCase().split(/[\s/,()[\]&]+/),
+      ...g.models.join(' ').toLowerCase().split(/[\s/,()[\]&]+/),
+    ].filter((t) => (t.length >= 3 || allowedShortTokens.has(t)) && !guideStopWords.has(t));
+
+    const uniqueTokens = Array.from(new Set(rawTokens));
+    let score = 0;
+    for (const tok of uniqueTokens) {
+      if (tok.length <= 2) {
+        if (queryWords.has(tok)) score += 3;
+      } else if (queryWords.has(tok)) {
+        score += 3;
+      } else if (text.includes(tok)) {
+        score += 2;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestGuide = g;
+    }
+  }
+
+  if (
+    bestGuide &&
+    bestScore > 0 &&
+    /(?:pin|pinout|bench|boot|guide|wakeup|wake\s*up|ecu|pcm|tcm|power|ignition|ground|connect|wiring)/i.test(text)
+  ) {
     return {
       matched: true,
-      actionDescription: `${matchedGuide.brandLabel} ${matchedGuide.ecuName} (${matchedGuide.tableRef}): ${matchedGuide.keyBenchPins}`,
-      spokenReply: matchedGuide.voicePrompt,
+      actionDescription: `${bestGuide.brandLabel} ${bestGuide.ecuName} (${bestGuide.tableRef}): ${bestGuide.keyBenchPins}`,
+      spokenReply: bestGuide.voicePrompt,
     };
   }
 

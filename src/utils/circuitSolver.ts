@@ -15,4 +15,7 @@ export type {
   BinaryPolarity,
   CanBusHealth,
   CanFramePatternSummary,
+  SignalAnomalyCode,
+  SignalAnomalyNotification,
+  SignalAnomalySeverity,
 } from '../simulation/signals/BinaryStateDecoder';

@@ -193,6 +193,28 @@ const BENCH_PLAYBOOKS: IndexedKnowledgeDoc[] = [
       '- ECU Pin 88 (or 85): K-Line Data to OBD2 Pin 7.',
     ].join('\n'),
   },
+  {
+    id: 'pb-ford-oem-pinout-master',
+    kind: 'BENCH_PLAYBOOK',
+    title: 'Ford / FoMoCo Master OEM Bench Pinouts (Ranger, Everest, EcoBlue, EcoSport, Fiesta, Focus, PowerShift TCM, Territory, Explorer, Transit)',
+    subtitle: 'Verified OEM Power, Switched Ignition & Ground Pinout Reference · 10 Ford Platforms',
+    dtcCode: 'FORD PINOUT C1E148 CBR B20',
+    ecuModel: 'Ford Ranger Everest T6 EcoBlue EcoSport Fiesta Focus PowerShift TCM Territory Explorer Transit',
+    actionTab: 'ECU_PINOUT',
+    targetPinId: 'ecu-pin-3',
+    body: [
+      'For the Ranger and Everest T6, power goes to Pin C1E148, switched ignition to Pin C1E142, and grounds to Pins C1E139 and C1E140.',
+      'For the Next-Gen Ranger and Everest EcoBlue, constant power connects to Pin CBR pin 1, ignition to CBR pin 3, and grounds to CBR pins 2 and 4.',
+      'For the EcoSport and Fiesta 1.5L, connect power to Pin 1, ignition to Pin 2, and ground to Pins 3 and 4.',
+      'The Focus and EcoSport GDI require power on Pin 61, ignition on Pin 16, and ground on Pin 32.',
+      'For the PowerShift TCM, power is applied to Pins 1 and 2, ignition to Pin 3, and grounds to Pins 4 and 5.',
+      'The Territory 1.5L EcoBoost uses Pin 8 for power, Pin 9 for ignition, and Pins 10 and 11 for ground.',
+      'Connecting the Ranger 2.5L NA requires power on Pin 1, ignition on Pin 2, and ground on Pins 3 and 4.',
+      'Older Escape, Focus, and Duratec models take power on Pin 15, ignition on Pin 6, and ground on Pin 61.',
+      'For the Explorer, power goes to Pin 103, ignition to Pin 105, and ground to Pin 116.',
+      'Finally, the Transit 2.2L TDCi needs power on Pin B20, ignition on Pin B22, and ground on Pins B23 and B24.',
+    ].join('\n'),
+  },
 ];
 
 function buildBaseDocuments(): IndexedKnowledgeDoc[] {
@@ -239,23 +261,23 @@ function buildBaseDocuments(): IndexedKnowledgeDoc[] {
       ecuModel: `${brand.brandName} ${brand.modelName}`,
       actionTab: 'ECU_PINOUT',
       body: `${brand.description}\nPopular Vehicles: ${brand.popularVehiclesInPH}\nKey Bench Pins: ${brand.pinouts
-        .slice(0, 12)
-        .map((p) => `Pin ${p.pinNumber} ${p.label} (${p.signalName}, ${p.nominalVoltage}V)`)
+        .slice(0, 48)
+        .map((p) => `Pin ${p.pinCode || p.pinNumber} ${p.label} (${p.signalName}, ${p.nominalVoltage}V)`)
         .join('; ')}`,
     });
 
     for (const pin of brand.pinouts) {
       docs.push({
-        id: `pin_${brand.id}_${pin.plug}_${pin.pinNumber}`,
+        id: `pin_${brand.id}_${pin.plug}_${pin.pinCode || pin.pinNumber}`,
         kind: 'ECU_PINOUT',
-        title: `${brand.brandName} ${brand.modelName.split('(')[0].trim()} — Pin ${pin.pinNumber} (${pin.label})`,
+        title: `${brand.brandName} ${brand.modelName.split('(')[0].trim()} — Pin ${pin.pinCode || pin.pinNumber} (${pin.label})`,
         subtitle: `${pin.plug} · ${pin.signalName} · ${pin.wireColor} · ${pin.nominalVoltage}V`,
-        dtcCode: '',
+        dtcCode: pin.pinCode || '',
         ecuModel: `${brand.brandName} ${brand.modelName}`,
         actionTab: 'ECU_PINOUT',
         targetPinId: pin.associatedSimPinId,
         body: [
-          `Pin ${pin.pinNumber} (${pin.label}) on ${brand.modelName}, Plug ${pin.plug}.`,
+          `Pin ${pin.pinNumber}${pin.pinCode ? ` [Code: ${pin.pinCode}]` : ''} (${pin.label}) on ${brand.modelName}, Plug ${pin.plug}.`,
           `Signal: ${pin.signalName} (${pin.category}), Wire Color: ${pin.wireColor}, Nominal Voltage: ${pin.nominalVoltage}V.`,
           `Bench Role: ${pin.benchRole}`,
           `Connection Instruction: ${pin.connectionInstruction}`,
@@ -296,12 +318,13 @@ function buildBaseDocuments(): IndexedKnowledgeDoc[] {
       title: `${guide.brandLabel} ${guide.ecuName} [${guide.status}]`,
       subtitle: `${guide.tableRef} · Models: ${guide.models.join(', ')}`,
       dtcCode: guide.status,
-      ecuModel: `${guide.brandLabel} ${guide.ecuName}`,
+      ecuModel: `${guide.brandLabel} ${guide.ecuName} ${guide.models.join(' ')}`,
       actionTab: guide.linkedProfileId ? 'ECU_PINOUT' : 'BENCH_LAB',
       body: [
         `Verification Status: ${guide.status} (${guide.tableRef})`,
         `Key Bench Pins: ${guide.keyBenchPins}`,
         `Power-Up / Boot Protocol: ${guide.bootOrPowerRule}`,
+        `Voice Guide Summary: ${guide.voicePrompt}`,
         `DLC Protocol: ${guide.dlcProtocol}`,
         guide.ocrVerifyGate ? `MANDATORY GATE: ${guide.ocrVerifyGate}` : '',
       ]

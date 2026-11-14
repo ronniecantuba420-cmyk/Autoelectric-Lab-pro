@@ -44,11 +44,38 @@ export interface CanFramePatternSummary {
   bitTransitions: number;
 }
 
+export type SignalAnomalyCode =
+  | 'INVALID_CAN_FRAMING'
+  | 'CAN_SIGNAL_ATTENUATION'
+  | 'CAN_DOMINANT_OVERLOAD'
+  | 'PWM_SIGNAL_CLIPPING'
+  | 'PWM_MISSING_PULSES'
+  | 'PWM_FREQUENCY_DRIFT'
+  | 'CAPTURE_WINDOW_SHORT'
+  | 'O2_SIGNAL_FIXED'
+  | 'PIN_HARD_FAULT'
+  | 'DC_RAIL_CHATTER';
+
+export type SignalAnomalySeverity = 'CRITICAL' | 'WARNING' | 'INFO';
+
+export interface SignalAnomalyNotification {
+  id: string;
+  code: SignalAnomalyCode;
+  title: string;
+  severity: SignalAnomalySeverity;
+  detail: string;
+  transitionFreqHz: number;
+  expectedRangeLabel: string;
+  observedLabel: string;
+  recommendation: string;
+}
+
 export interface BinaryPinMetrics {
   dutyCyclePct: number;
   pulseWidthMs: number;
   periodMs: number;
   frequencyHz: number;
+  transitionFreqHz: number;
   edgeCount: number;
   highThresholdV: number;
   lowThresholdV: number;
@@ -71,6 +98,7 @@ export interface BinaryPinMonitorResult {
   hexBytes: string[];
   metrics: BinaryPinMetrics;
   canFrameSummary: CanFramePatternSummary | null;
+  anomalies: SignalAnomalyNotification[];
   diagnosticSummary: string;
 }
 
@@ -305,6 +333,65 @@ export function analyzePinBinaryState(
 
     const bitString = isoBits.join('');
     const hexBytes = bitsToHexBytes(isoBits);
+    const windowSecCan = Math.max(1e-4, windowMs / 1000);
+    const canTransitionFreqHz = Number((bitTransitions / windowSecCan).toFixed(2));
+    const sofDetected = !busFaulted && sofBitIndex !== null;
+
+    const canAnomalies: SignalAnomalyNotification[] = [];
+    if (isPowerOn) {
+      if (
+        busFaulted ||
+        vDiffMax < 0.9 ||
+        bitTransitions === 0 ||
+        canTransitionFreqHz < 2200 ||
+        !sofDetected
+      ) {
+        const reason = busFaulted || vDiffMax < 0.9
+          ? `Differential swing collapsed (V_diff peak ${vDiffMax.toFixed(2)}V < 0.90V ISO 11898 threshold) with ${bitTransitions} edges.`
+          : !sofDetected
+            ? `No valid Start-of-Frame (1→0) boundary detected across ${bitCount} sampled bits (${canTransitionFreqHz.toFixed(0)} Hz transitions).`
+            : `Binary transition frequency (${canTransitionFreqHz.toFixed(0)} Hz) fell below minimum active framing threshold (2.2 kHz).`;
+        canAnomalies.push({
+          id: `${pinId}-INVALID_CAN_FRAMING`,
+          code: 'INVALID_CAN_FRAMING',
+          title: 'Invalid CAN Framing',
+          severity: 'CRITICAL',
+          detail: reason,
+          transitionFreqHz: canTransitionFreqHz,
+          expectedRangeLabel: '3.0–24.0 kHz transitions · SOF + V_diff ≥ 0.90V',
+          observedLabel: `${canTransitionFreqHz.toFixed(0)} Hz (${bitTransitions} edges) · V_diff ${vDiffMax.toFixed(2)}V`,
+          recommendation:
+            'Inspect CAN_H (#13) / CAN_L (#14) continuity, 60Ω dual termination, and short-to-GND/VBAT faults.',
+        });
+      } else {
+        if (vDiffMax < 1.4) {
+          canAnomalies.push({
+            id: `${pinId}-CAN_SIGNAL_ATTENUATION`,
+            code: 'CAN_SIGNAL_ATTENUATION',
+            title: 'CAN Differential Attenuation',
+            severity: 'WARNING',
+            detail: `CAN differential amplitude attenuated to ${vDiffMax.toFixed(2)}V (nominal 2.00V), risking bit-sampling errors under EMI.`,
+            transitionFreqHz: canTransitionFreqHz,
+            expectedRangeLabel: '1.50–2.20V V_diff',
+            observedLabel: `${vDiffMax.toFixed(2)}V V_diff @ ${canTransitionFreqHz.toFixed(0)} Hz`,
+            recommendation: 'Check connector pin corrosion (+50Ω/+250Ω) or missing 120Ω termination resistor.',
+          });
+        }
+        if (dominantPct > 75) {
+          canAnomalies.push({
+            id: `${pinId}-CAN_DOMINANT_OVERLOAD`,
+            code: 'CAN_DOMINANT_OVERLOAD',
+            title: 'CAN Bus Dominant Overload',
+            severity: 'WARNING',
+            detail: `Dominant state occupancy (${dominantPct.toFixed(1)}%) exceeds nominal frame arbitration balance, reducing edge density.`,
+            transitionFreqHz: canTransitionFreqHz,
+            expectedRangeLabel: '15–65% Dominant duty',
+            observedLabel: `${dominantPct.toFixed(1)}% Dominant (${canTransitionFreqHz.toFixed(0)} Hz)`,
+            recommendation: 'Verify transceiver TXD pin is not stuck dominant or flooding high-priority IDs.',
+          });
+        }
+      }
+    }
 
     let diagnosticSummary = '';
     if (!isPowerOn) {
@@ -313,7 +400,7 @@ export function analyzePinBinaryState(
     } else if (health === 'BUS_FAULT_COLLAPSED') {
       diagnosticSummary = `CAN frame traffic interrupted (${pinLabel} / companion fault). V_diff collapsed to ${vDiffMax.toFixed(2)}V (ISO 11898 requires ≥0.9V for Dominant 0).`;
     } else {
-      diagnosticSummary = `ISO 11898 High-Speed CAN active: ${dominantPct.toFixed(1)}% Dominant (0) / ${recessivePct.toFixed(1)}% Recessive (1), V_diff peak ${vDiffMax.toFixed(2)}V, ${bitTransitions} bit edges.`;
+      diagnosticSummary = `ISO 11898 High-Speed CAN active: ${dominantPct.toFixed(1)}% Dominant (0) / ${recessivePct.toFixed(1)}% Recessive (1), V_diff peak ${vDiffMax.toFixed(2)}V, ${bitTransitions} bit edges (${(canTransitionFreqHz / 1000).toFixed(2)} kHz).`;
     }
 
     return {
@@ -332,6 +419,7 @@ export function analyzePinBinaryState(
         pulseWidthMs: Number((CAN_BIT_PERIOD_SEC * 1000).toFixed(3)),
         periodMs: Number((CAN_BIT_PERIOD_SEC * 2000).toFixed(3)),
         frequencyHz: detectedProtocol === 'CAN_BUS' ? 500000 : 0,
+        transitionFreqHz: canTransitionFreqHz,
         edgeCount: bitTransitions,
         highThresholdV: 0.9,
         lowThresholdV: 0.5,
@@ -349,13 +437,14 @@ export function analyzePinBinaryState(
         vDiffMin: Number(vDiffMin.toFixed(3)),
         dominantPct,
         recessivePct,
-        sofDetected: !busFaulted && sofBitIndex !== null,
+        sofDetected,
         sofBitIndex,
         arbitrationIdHex,
         dlc,
         payloadHexBytes,
         bitTransitions,
       },
+      anomalies: canAnomalies,
       diagnosticSummary,
     };
   }
@@ -592,6 +681,134 @@ export function analyzePinBinaryState(
     diagnosticSummary = `Steady ${mnaNodeVoltage.toFixed(2)}V DC/analog rail on #${pinNumber} ${pinLabel} (0 logic transitions in ${windowMs} ms). Select INJ_1, IGN_1, CAN_H, CAN_L, or O2_SIG for active PWM/CAN decoding.`;
   }
 
+  const transitionFreqHz = Number(
+    (rawEdges / Math.max(1e-4, windowMs / 1000)).toFixed(2)
+  );
+
+  const anomalies: SignalAnomalyNotification[] = [];
+  if (isPowerOn) {
+    if (isInjectorPin || isIgnitionPin) {
+      const expectedCycleHz = Math.max(4, safeRpm / 60);
+      const expectedCyclePeriodMs = 1000 / expectedCycleHz;
+      const expectedTransHz = Number((expectedCycleHz * 2).toFixed(1));
+      const isDriverActive = isIgnitionPin || isInjectorFiring;
+
+      if (isDriverActive) {
+        const isRailClipped =
+          pinHardFault ||
+          (isInjectorPin && hasInjectorFault) ||
+          dutyCyclePct >= 95 ||
+          (dutyCyclePct === 0 && windowMs >= expectedCyclePeriodMs * 1.15) ||
+          (isInjectorPin && rawSeries.vMax < 8.5) ||
+          (isIgnitionPin && rawSeries.vMax < 3.5);
+
+        if (isRailClipped) {
+          const clipReason =
+            pinHardFault || (isInjectorPin && hasInjectorFault)
+              ? `PWM switching stopped (${transitionFreqHz.toFixed(1)} Hz transitions) due to ${pinHardFault ? faultType : 'injector circuit fault'} — output pinned at ${mnaNodeVoltage.toFixed(2)}V.`
+              : dutyCyclePct >= 95
+                ? `PWM duty saturated at ${dutyCyclePct.toFixed(1)}% with 0.0 Hz transitions — output clipped ON.`
+                : rawEdges === 0
+                  ? `Zero binary transitions (${transitionFreqHz.toFixed(1)} Hz) across ${windowMs}ms window (> 1 cycle @ ${expectedCyclePeriodMs.toFixed(1)}ms) — PWM clipped.`
+                  : `Peak voltage amplitude (${rawSeries.vMax.toFixed(2)}V) is clipped below normal rail threshold despite active transitions.`;
+          anomalies.push({
+            id: `${pinId}-PWM_SIGNAL_CLIPPING`,
+            code: 'PWM_SIGNAL_CLIPPING',
+            title: 'PWM Signal Clipping',
+            severity: 'CRITICAL',
+            detail: clipReason,
+            transitionFreqHz,
+            expectedRangeLabel: `~${expectedTransHz.toFixed(1)} Hz transitions (${expectedCycleHz.toFixed(1)} Hz PWM)`,
+            observedLabel: `${transitionFreqHz.toFixed(1)} Hz (${rawEdges} edges) · ${rawSeries.vMin.toFixed(2)}–${rawSeries.vMax.toFixed(2)}V`,
+            recommendation: isInjectorPin
+              ? 'Verify KL30 +12V coil supply, low-side MOSFET sink continuity, and series resistance on #10 INJ_1.'
+              : 'Inspect ignition trigger driver output and check #11 IGN_1 for short-to-GND/VBAT or open harness.',
+          });
+        } else if (rawEdges === 0 && windowMs < expectedCyclePeriodMs * 1.15) {
+          anomalies.push({
+            id: `${pinId}-CAPTURE_WINDOW_SHORT`,
+            code: 'CAPTURE_WINDOW_SHORT',
+            title: 'Capture Window < 1 PWM Period',
+            severity: 'INFO',
+            detail: `Selected ${windowMs}ms window is shorter than 1 cycle (${expectedCyclePeriodMs.toFixed(1)}ms at ${safeRpm} RPM), so edges may fall outside frame.`,
+            transitionFreqHz,
+            expectedRangeLabel: `Window ≥ ${Math.ceil(expectedCyclePeriodMs * 1.2)}ms`,
+            observedLabel: `${windowMs}ms window · ${rawEdges} edges`,
+            recommendation: 'Switch Capture window to 100ms or 200ms to measure steady transition frequency.',
+          });
+        } else if (transitionFreqHz > expectedTransHz * 1.65 + 12) {
+          anomalies.push({
+            id: `${pinId}-PWM_FREQUENCY_DRIFT`,
+            code: 'PWM_FREQUENCY_DRIFT',
+            title: 'Excessive Transition Chatter',
+            severity: 'WARNING',
+            detail: `Measured binary transition rate (${transitionFreqHz.toFixed(1)} Hz) exceeds expected ${expectedTransHz.toFixed(1)} Hz cadence for ${safeRpm} RPM.`,
+            transitionFreqHz,
+            expectedRangeLabel: `~${expectedTransHz.toFixed(1)} Hz transitions`,
+            observedLabel: `${transitionFreqHz.toFixed(1)} Hz (${rawEdges} edges)`,
+            recommendation: 'Check for contact bounce, ground offset noise, or inductive ring crossing logic threshold.',
+          });
+        } else if (
+          windowMs >= expectedCyclePeriodMs * 2.1 &&
+          transitionFreqHz > 0 &&
+          transitionFreqHz < expectedTransHz * 0.55
+        ) {
+          anomalies.push({
+            id: `${pinId}-PWM_MISSING_PULSES`,
+            code: 'PWM_MISSING_PULSES',
+            title: 'PWM Pulse Dropout',
+            severity: 'WARNING',
+            detail: `Binary transition rate (${transitionFreqHz.toFixed(1)} Hz) is lower than expected ${expectedTransHz.toFixed(1)} Hz across ${windowMs}ms.`,
+            transitionFreqHz,
+            expectedRangeLabel: `~${expectedTransHz.toFixed(1)} Hz transitions`,
+            observedLabel: `${transitionFreqHz.toFixed(1)} Hz (${rawEdges} edges)`,
+            recommendation: 'Inspect CKP/CMP sync and intermittent harness open circuits.',
+          });
+        }
+      }
+    } else if (isO2Pin) {
+      if (pinHardFault || rawEdges === 0) {
+        anomalies.push({
+          id: `${pinId}-O2_SIGNAL_FIXED`,
+          code: 'O2_SIGNAL_FIXED',
+          title: 'O2 Sensor Switching Stalled',
+          severity: 'WARNING',
+          detail: `No cross-stoichiometric (0.45V) binary transitions detected (${transitionFreqHz.toFixed(1)} Hz) on #15 O2_SIG.`,
+          transitionFreqHz,
+          expectedRangeLabel: '2.0–3.0 Hz transitions @ 1.25 Hz',
+          observedLabel: `${transitionFreqHz.toFixed(1)} Hz (${rawEdges} edges) · ${mnaNodeVoltage.toFixed(2)}V`,
+          recommendation: 'Check O2 sensor signal wire for short-to-GND/VBAT, open circuit, or sluggish sensor element.',
+        });
+      }
+    } else {
+      if (pinHardFault) {
+        anomalies.push({
+          id: `${pinId}-PIN_HARD_FAULT`,
+          code: 'PIN_HARD_FAULT',
+          title: `Pin Fault: ${faultType}`,
+          severity: 'CRITICAL',
+          detail: `Active fault (${faultType}) holding #${pinNumber} ${pinLabel} at ${mnaNodeVoltage.toFixed(2)}V.`,
+          transitionFreqHz,
+          expectedRangeLabel: 'Nominal MNA rail (0 Hz DC)',
+          observedLabel: `${mnaNodeVoltage.toFixed(2)}V · ${faultType}`,
+          recommendation: 'Clear or repair the injected harness/terminal fault to restore nominal ECU rail voltage.',
+        });
+      } else if (rawEdges >= 2) {
+        anomalies.push({
+          id: `${pinId}-DC_RAIL_CHATTER`,
+          code: 'DC_RAIL_CHATTER',
+          title: 'Unexpected DC Rail Transitions',
+          severity: 'WARNING',
+          detail: `Detected ${rawEdges} unexpected binary logic transitions (${transitionFreqHz.toFixed(1)} Hz) on steady DC pin #${pinNumber} ${pinLabel}.`,
+          transitionFreqHz,
+          expectedRangeLabel: '0.0 Hz (Steady DC)',
+          observedLabel: `${transitionFreqHz.toFixed(1)} Hz (${rawEdges} edges)`,
+          recommendation: 'Check power/ground integrity for intermittent contact or excessive voltage ripple.',
+        });
+      }
+    }
+  }
+
   return {
     pinId,
     pinLabel,
@@ -607,6 +824,7 @@ export function analyzePinBinaryState(
       pulseWidthMs: avgPulseWidthMs,
       periodMs: measuredPeriodMs,
       frequencyHz: Number(measuredFreqHz.toFixed(2)),
+      transitionFreqHz,
       edgeCount: rawEdges,
       highThresholdV: Number(highThresholdV.toFixed(2)),
       lowThresholdV: Number(lowThresholdV.toFixed(2)),
@@ -617,6 +835,7 @@ export function analyzePinBinaryState(
       activePolarity,
     },
     canFrameSummary: null,
+    anomalies,
     diagnosticSummary,
   };
 }

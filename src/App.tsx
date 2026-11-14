@@ -23,6 +23,7 @@ import {
   SavedDiagnosticLog,
   subscribeBenchSessions,
   subscribeDiagnosticLogs,
+  syncFordOemPinoutsToDatabase,
 } from './services/benchStorageService';
 import { useAuth } from './context/AuthContext';
 import {
@@ -86,6 +87,8 @@ export default function App() {
       setSavedSessions([]);
       return;
     }
+
+    syncFordOemPinoutsToDatabase(user.uid).catch(() => {});
 
     const unsubLogs = subscribeDiagnosticLogs(
       user.uid,

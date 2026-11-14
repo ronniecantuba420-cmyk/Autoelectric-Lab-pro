@@ -12,6 +12,7 @@ import {
   Car,
   Check,
   Globe,
+  Database,
 } from 'lucide-react';
 import {
   ECU_BRAND_PROFILES,
@@ -21,6 +22,11 @@ import {
   EcuBrandProfile,
 } from './ecuPinoutData';
 import { OemConnectorDiagram } from './OemConnectorDiagram';
+import { useAuth } from '../context/AuthContext';
+import {
+  FORD_OEM_PINOUTS_SUMMARY_TEXT,
+  saveDiagnosticLog,
+} from '../services/benchStorageService';
 
 export { ECU_BRAND_PROFILES, ECU_BENCH_PINOUTS };
 export type { BenchPinoutInfo, PcbComponentPoint, EcuBrandProfile };
@@ -194,6 +200,7 @@ export const EcuConnectorPinouts: React.FC<EcuConnectorPinoutsProps> = ({
   onSearchLivePinout,
   externalBrandId,
 }) => {
+  const { user, signInWithGoogle } = useAuth();
   const [selectedBrandId, setSelectedBrandId] = useState<string>(
     externalBrandId || 'toyota-denso-175822'
   );
@@ -203,6 +210,7 @@ export const EcuConnectorPinouts: React.FC<EcuConnectorPinoutsProps> = ({
   const [showOverlayMarkers, setShowOverlayMarkers] = useState(true);
   const [viewMode, setViewMode] = useState<'PHYSICAL' | 'PCB' | 'LOGICAL'>('PHYSICAL');
   const [mobilePinoutTab, setMobilePinoutTab] = useState<'DIAGRAM' | 'DIRECTORY'>('DIAGRAM');
+  const [dbSaveState, setDbSaveState] = useState<'IDLE' | 'SAVING' | 'SAVED' | 'ERROR'>('IDLE');
 
   const activeBrand = useMemo(
     () => ECU_BRAND_PROFILES.find((b) => b.id === selectedBrandId) || ECU_BRAND_PROFILES[0],
@@ -224,6 +232,7 @@ export const EcuConnectorPinouts: React.FC<EcuConnectorPinoutsProps> = ({
 
   const handleBrandChange = useCallback((brandId: string) => {
     setSelectedBrandId(brandId);
+    setDbSaveState('IDLE');
     const newBrand =
       ECU_BRAND_PROFILES.find((b) => b.id === brandId) || ECU_BRAND_PROFILES[0];
     setSelectedPlugFilter('ALL');
@@ -249,6 +258,41 @@ export const EcuConnectorPinouts: React.FC<EcuConnectorPinoutsProps> = ({
     },
     [onSelectPin]
   );
+
+  const handleSavePinoutsToDb = useCallback(async () => {
+    if (!user) {
+      await signInWithGoogle();
+      return;
+    }
+    setDbSaveState('SAVING');
+    try {
+      const checklistLines = activeBrand.essentialChecklist
+        .map((item) => `• ${item.pin}: ${item.role}`)
+        .join('\n');
+      const pinLines = activeBrand.pinouts
+        .map(
+          (p) =>
+            `Pin ${p.pinCode || p.pinNumber} (${p.plug}) — ${p.signalName} [${p.label}]: ${p.nominalVoltage}V (${p.wireColor}) · ${p.connectionInstruction}`
+        )
+        .join('\n');
+      const summary =
+        activeBrand.id === 'ford-fomoco-sid208'
+          ? `${FORD_OEM_PINOUTS_SUMMARY_TEXT}\n\nChecklist:\n${checklistLines}\n\nPinouts:\n${pinLines}`
+          : `${activeBrand.description}\nVehicles: ${activeBrand.popularVehiclesInPH}\n\nChecklist:\n${checklistLines}\n\nPinouts:\n${pinLines}`;
+
+      await saveDiagnosticLog(user.uid, {
+        title: `OEM Pinout Reference: ${activeBrand.brandName} — ${activeBrand.modelName.slice(0, 90)}`,
+        dtcCode: 'PINOUT_NOTE',
+        ecuModel: `${activeBrand.brandName} ${activeBrand.modelName}`.slice(0, 120),
+        sourceType: 'PINOUT_NOTE',
+        summary: summary.slice(0, 11800),
+        sources: [],
+      });
+      setDbSaveState('SAVED');
+    } catch {
+      setDbSaveState('ERROR');
+    }
+  }, [user, signInWithGoogle, activeBrand]);
 
   const filteredPins = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
@@ -338,6 +382,31 @@ export const EcuConnectorPinouts: React.FC<EcuConnectorPinoutsProps> = ({
                 </option>
               ))}
             </select>
+            <button
+              onClick={handleSavePinoutsToDb}
+              disabled={dbSaveState === 'SAVING'}
+              className={`px-2 sm:px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 text-xs font-bold transition whitespace-nowrap shadow-sm cursor-pointer shrink-0 ${
+                dbSaveState === 'SAVED'
+                  ? 'bg-emerald-950/90 border-emerald-500/80 text-emerald-300'
+                  : dbSaveState === 'ERROR'
+                  ? 'bg-rose-950/90 border-rose-500/80 text-rose-300'
+                  : 'bg-slate-950 hover:bg-slate-900 border-amber-500/70 text-amber-300'
+              }`}
+              title="Save this OEM Pinout Reference to Cloud Database for Offline AI Voice Guide"
+            >
+              <Database className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline">
+                {dbSaveState === 'SAVING'
+                  ? 'Saving...'
+                  : dbSaveState === 'SAVED'
+                  ? 'Saved to DB'
+                  : dbSaveState === 'ERROR'
+                  ? 'Retry Save'
+                  : user
+                  ? 'Save Pinout to DB'
+                  : 'Sign In to Save DB'}
+              </span>
+            </button>
             {onSearchLivePinout && (
               <button
                 onClick={() => onSearchLivePinout(activeBrand.modelName)}

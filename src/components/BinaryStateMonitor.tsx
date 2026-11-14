@@ -1,16 +1,23 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  Bell,
   Binary,
+  CheckCircle2,
+  Info,
   Pause,
   Play,
   Radio,
+  ShieldAlert,
+  Trash2,
 } from 'lucide-react';
 import { EcuPin, InjectedFault } from '../types/ecu';
 import {
   analyzePinBinaryState,
   BinaryPinMonitorResult,
+  SignalAnomalyNotification,
+  SignalAnomalySeverity,
 } from '../simulation/signals/BinaryStateDecoder';
 
 export interface BinaryStateMonitorProps {
@@ -40,6 +47,18 @@ export interface BinaryStateMonitorProps {
   variant?: 'full' | 'compact';
 }
 
+interface AnomalyLogEntry {
+  key: string;
+  pinNumber: number;
+  pinLabel: string;
+  code: SignalAnomalyNotification['code'];
+  title: string;
+  severity: SignalAnomalySeverity;
+  transitionFreqHz: number;
+  observedLabel: string;
+  timestampLabel: string;
+}
+
 const DATA_PIN_QUICK_SELECT = [
   { id: 'ecu-pin-10', shortLabel: 'INJ_1', pinNum: 10, role: 'PWM' },
   { id: 'ecu-pin-11', shortLabel: 'IGN_1', pinNum: 11, role: '5V TRIG' },
@@ -54,6 +73,39 @@ function formatFreq(freqHz: number): string {
   if (!Number.isFinite(freqHz) || freqHz <= 0) return '0.0 Hz (DC)';
   if (freqHz >= 1000) return `${(freqHz / 1000).toFixed(0)} kbps (${(freqHz / 1000).toFixed(0)} kHz)`;
   return `${freqHz.toFixed(1)} Hz`;
+}
+
+function formatTransitionFreq(freqHz: number): string {
+  if (!Number.isFinite(freqHz) || freqHz <= 0) return '0.0 Hz';
+  if (freqHz >= 1000) return `${(freqHz / 1000).toFixed(2)} kHz`;
+  return `${freqHz.toFixed(1)} Hz`;
+}
+
+function getSeverityStyle(severity: SignalAnomalySeverity): {
+  containerCls: string;
+  badgeCls: string;
+  titleCls: string;
+} {
+  switch (severity) {
+    case 'CRITICAL':
+      return {
+        containerCls: 'border-rose-500/60 bg-rose-950/65 text-rose-100',
+        badgeCls: 'bg-rose-500/20 border-rose-400/70 text-rose-200',
+        titleCls: 'text-rose-200',
+      };
+    case 'WARNING':
+      return {
+        containerCls: 'border-amber-500/60 bg-amber-950/55 text-amber-100',
+        badgeCls: 'bg-amber-500/20 border-amber-400/70 text-amber-200',
+        titleCls: 'text-amber-200',
+      };
+    default:
+      return {
+        containerCls: 'border-cyan-500/45 bg-cyan-950/45 text-cyan-100',
+        badgeCls: 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200',
+        titleCls: 'text-cyan-200',
+      };
+  }
 }
 
 function getProtocolStyle(result: BinaryPinMonitorResult): {
@@ -111,6 +163,9 @@ export const BinaryStateMonitor: React.FC<BinaryStateMonitorProps> = ({
   const [isRunning, setIsRunning] = useState(true);
   const [simTimeSec, setSimTimeSec] = useState(0);
   const [pwmWindowMs, setPwmWindowMs] = useState<number>(100);
+  const [showAlertLog, setShowAlertLog] = useState(false);
+  const [anomalyLog, setAnomalyLog] = useState<AnomalyLogEntry[]>([]);
+  const lastActiveAnomalyKeysRef = useRef<Set<string>>(new Set());
 
   const activePin = useMemo(() => {
     return (
@@ -198,9 +253,50 @@ export const BinaryStateMonitor: React.FC<BinaryStateMonitorProps> = ({
     pwmWindowMs,
   ]);
 
+  // Latch rising edges of CRITICAL / WARNING anomalies into the session alert log
+  useEffect(() => {
+    if (!analysis) return;
+    const actionable = analysis.anomalies.filter(
+      (a) => a.severity === 'CRITICAL' || a.severity === 'WARNING'
+    );
+    const nextActiveKeys = new Set(actionable.map((a) => `${analysis.pinId}:${a.code}`));
+    const newlyTriggered = actionable.filter(
+      (a) => !lastActiveAnomalyKeysRef.current.has(`${analysis.pinId}:${a.code}`)
+    );
+    lastActiveAnomalyKeysRef.current = nextActiveKeys;
+
+    if (newlyTriggered.length === 0) return;
+
+    const timestampLabel = new Date().toLocaleTimeString([], {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+
+    setAnomalyLog((prev) => {
+      const additions: AnomalyLogEntry[] = newlyTriggered.map((a) => ({
+        key: `${analysis.pinId}:${a.code}:${Date.now()}`,
+        pinNumber: analysis.pinNumber,
+        pinLabel: analysis.pinLabel,
+        code: a.code,
+        title: a.title,
+        severity: a.severity,
+        transitionFreqHz: a.transitionFreqHz,
+        observedLabel: a.observedLabel,
+        timestampLabel,
+      }));
+      return [...additions, ...prev].slice(0, 15);
+    });
+  }, [analysis]);
+
   if (!analysis || !activePin) return null;
 
   const { badgeCls, accentText } = getProtocolStyle(analysis);
+  const actionableAnomalies = analysis.anomalies.filter(
+    (a) => a.severity === 'CRITICAL' || a.severity === 'WARNING'
+  );
+  const hasCriticalAnomaly = actionableAnomalies.some((a) => a.severity === 'CRITICAL');
   const slotCount = analysis.samples.length;
   const svgWidth = 480;
   const svgHeight = variant === 'compact' ? 58 : 74;
@@ -243,6 +339,30 @@ export const BinaryStateMonitor: React.FC<BinaryStateMonitorProps> = ({
           >
             {analysis.protocolBadge}
           </span>
+          {actionableAnomalies.length > 0 ? (
+            <span
+              data-testid="binary-header-anomaly-pill"
+              className={`px-1.5 py-0.5 text-[9px] font-bold rounded border flex items-center gap-1 ${
+                hasCriticalAnomaly
+                  ? 'bg-rose-950 border-rose-500/70 text-rose-200'
+                  : 'bg-amber-950 border-amber-500/70 text-amber-200'
+              }`}
+            >
+              <ShieldAlert className="w-2.5 h-2.5" />
+              {actionableAnomalies.length}{' '}
+              {actionableAnomalies.length === 1 ? 'ANOMALY' : 'ANOMALIES'}
+            </span>
+          ) : (
+            isPowerOn && (
+              <span
+                data-testid="binary-header-nominal-pill"
+                className="px-1.5 py-0.5 text-[9px] font-bold rounded border bg-emerald-950/70 border-emerald-500/40 text-emerald-300 flex items-center gap-1"
+              >
+                <CheckCircle2 className="w-2.5 h-2.5" />
+                NOMINAL
+              </span>
+            )
+          )}
           {activeFault && activeFault.faultType !== 'NONE' && (
             <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-rose-950 border border-rose-500/50 text-rose-200 flex items-center gap-1">
               <AlertTriangle className="w-2.5 h-2.5" />
@@ -267,6 +387,22 @@ export const BinaryStateMonitor: React.FC<BinaryStateMonitorProps> = ({
               ))}
             </select>
           </label>
+
+          <button
+            type="button"
+            onClick={() => setShowAlertLog((prev) => !prev)}
+            aria-expanded={showAlertLog}
+            aria-label="Toggle signal anomaly notification log"
+            data-testid="binary-alert-log-toggle"
+            className={`px-2 py-1 text-[10px] rounded border flex items-center gap-1 font-semibold transition ${
+              showAlertLog || anomalyLog.length > 0
+                ? 'bg-slate-900 border-amber-500/50 text-amber-200 hover:border-amber-400'
+                : 'bg-slate-950 border-slate-700 text-slate-300 hover:border-cyan-500/40'
+            }`}
+          >
+            <Bell className="w-3 h-3" />
+            <span>LOG ({anomalyLog.length})</span>
+          </button>
 
           <button
             type="button"
@@ -334,6 +470,150 @@ export const BinaryStateMonitor: React.FC<BinaryStateMonitorProps> = ({
           <span className="text-[9.5px] text-cyan-300/90 tabular-nums">
             WIN: {analysis.windowMs.toFixed(2)}ms (48 bit-slots)
           </span>
+        )}
+      </div>
+
+      {/* Diagnostic Notification System (Transition-Frequency Anomaly Alerts) */}
+      <div
+        data-testid="binary-anomaly-notifications"
+        role="status"
+        aria-live="polite"
+        className="flex flex-col gap-1.5"
+      >
+        {!isPowerOn ? (
+          <div className="rounded-lg border border-slate-800 bg-slate-950/75 px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
+            <span className="flex items-center gap-1.5">
+              <Info className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+              <span>Bench PSU Output OFF · Transition-frequency anomaly detection in standby.</span>
+            </span>
+            <span className="tabular-nums text-slate-500">Transitions: 0.0 Hz</span>
+          </div>
+        ) : analysis.anomalies.length === 0 ? (
+          <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/25 px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-2 text-[10px] text-emerald-200">
+            <span className="flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <span className="font-semibold">Signal Integrity Nominal</span>
+              <span className="text-emerald-300/80 hidden sm:inline">
+                · Framing &amp; transition cadence within expected physical bounds
+              </span>
+            </span>
+            <span
+              data-testid="binary-transition-rate-badge"
+              className="tabular-nums font-semibold text-emerald-300"
+            >
+              Transition Rate: {formatTransitionFreq(analysis.metrics.transitionFreqHz)}
+            </span>
+          </div>
+        ) : (
+          analysis.anomalies.map((anomaly) => {
+            const sevStyle = getSeverityStyle(anomaly.severity);
+            const SevIcon =
+              anomaly.severity === 'CRITICAL'
+                ? ShieldAlert
+                : anomaly.severity === 'WARNING'
+                  ? AlertTriangle
+                  : Info;
+            return (
+              <div
+                key={anomaly.id}
+                data-testid={`binary-anomaly-card-${anomaly.code}`}
+                className={`rounded-lg border px-2.5 py-2 flex flex-col gap-1 text-[10px] ${sevStyle.containerCls}`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                    <SevIcon className="w-3.5 h-3.5 shrink-0" />
+                    <span
+                      className={`px-1.5 py-0.5 rounded border text-[8.5px] font-bold uppercase tracking-wider ${sevStyle.badgeCls}`}
+                    >
+                      {anomaly.severity}
+                    </span>
+                    <strong className={`text-[11px] font-bold tracking-wide ${sevStyle.titleCls}`}>
+                      {anomaly.title}
+                    </strong>
+                  </div>
+                  <span className="text-[9.5px] font-semibold tabular-nums opacity-90">
+                    Transition Rate: {formatTransitionFreq(anomaly.transitionFreqHz)}
+                  </span>
+                </div>
+
+                <p className="text-[10px] leading-snug opacity-95">{anomaly.detail}</p>
+
+                <div className="flex flex-wrap items-center gap-1.5 text-[9px] tabular-nums">
+                  <span className="px-1.5 py-0.5 rounded bg-slate-950/75 border border-white/10">
+                    Observed: <strong>{anomaly.observedLabel}</strong>
+                  </span>
+                  <span className="px-1.5 py-0.5 rounded bg-slate-950/75 border border-white/10 opacity-85">
+                    Expected: {anomaly.expectedRangeLabel}
+                  </span>
+                </div>
+
+                {!isCompact && (
+                  <div className="text-[9.5px] text-slate-200/85">
+                    <span className="font-semibold text-cyan-300">Next Check:</span>{' '}
+                    {anomaly.recommendation}
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+
+        {/* Collapsible Session Diagnostic Event Log */}
+        {showAlertLog && (
+          <div
+            data-testid="binary-anomaly-log-drawer"
+            className="rounded-lg border border-slate-700/80 bg-slate-950/95 p-2 flex flex-col gap-1.5 text-[9.5px]"
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-1">
+              <span className="font-bold uppercase tracking-wider text-amber-200 flex items-center gap-1.5">
+                <Bell className="w-3 h-3 text-amber-400" />
+                Session Anomaly Notification Log ({anomalyLog.length})
+              </span>
+              {anomalyLog.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setAnomalyLog([])}
+                  className="px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900 text-slate-300 hover:text-white hover:border-slate-500 flex items-center gap-1 text-[9px]"
+                >
+                  <Trash2 className="w-2.5 h-2.5" />
+                  <span>Clear</span>
+                </button>
+              )}
+            </div>
+            {anomalyLog.length === 0 ? (
+              <div className="text-slate-400 py-1">
+                No critical or warning signal anomalies recorded in this session yet.
+              </div>
+            ) : (
+              <ul className="flex flex-col gap-1 max-h-32 overflow-y-auto pr-1">
+                {anomalyLog.map((entry) => (
+                  <li
+                    key={entry.key}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded bg-slate-900/90 border border-slate-800 px-2 py-1 tabular-nums"
+                  >
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <span
+                        className={`px-1 py-0.5 rounded text-[8px] font-bold ${
+                          entry.severity === 'CRITICAL'
+                            ? 'bg-rose-500/20 text-rose-300'
+                            : 'bg-amber-500/20 text-amber-300'
+                        }`}
+                      >
+                        {entry.severity}
+                      </span>
+                      <span className="font-semibold text-slate-100">{entry.title}</span>
+                      <span className="text-cyan-300">
+                        #{entry.pinNumber} {entry.pinLabel}
+                      </span>
+                    </span>
+                    <span className="text-slate-400">
+                      {formatTransitionFreq(entry.transitionFreqHz)} · {entry.timestampLabel}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
       </div>
 
@@ -622,6 +902,9 @@ export const BinaryStateMonitor: React.FC<BinaryStateMonitorProps> = ({
         <div className="hud-well rounded px-2 py-1.5 flex flex-col justify-between">
           <span className="text-[8.5px] text-slate-400 uppercase">Edges (0↔1)</span>
           <strong className="text-xs text-amber-300">{analysis.metrics.edgeCount}</strong>
+          <span className="text-[8.5px] text-amber-200/80 tabular-nums">
+            {formatTransitionFreq(analysis.metrics.transitionFreqHz)}
+          </span>
         </div>
 
         <div className="hud-well rounded px-2 py-1.5 flex flex-col justify-between col-span-2 sm:col-span-1">

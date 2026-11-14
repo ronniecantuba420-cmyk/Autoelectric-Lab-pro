@@ -561,3 +561,52 @@ export async function deletePcbScan(uid: string, scanId: string): Promise<void> 
     handleFirestoreError(error, OperationType.DELETE, path);
   }
 }
+
+export const FORD_OEM_PINOUTS_DB_LOG_ID = 'diag_ford_oem_pinouts_v1';
+
+export const FORD_OEM_PINOUTS_SUMMARY_TEXT = [
+  'For the Ranger and Everest T6, power goes to Pin C1E148, switched ignition to Pin C1E142, and grounds to Pins C1E139 and C1E140.',
+  'For the Next-Gen Ranger and Everest EcoBlue, constant power connects to Pin CBR pin 1, ignition to CBR pin 3, and grounds to CBR pins 2 and 4.',
+  'For the EcoSport and Fiesta 1.5L, connect power to Pin 1, ignition to Pin 2, and ground to Pins 3 and 4.',
+  'The Focus and EcoSport GDI require power on Pin 61, ignition on Pin 16, and ground on Pin 32.',
+  'For the PowerShift TCM, power is applied to Pins 1 and 2, ignition to Pin 3, and grounds to Pins 4 and 5.',
+  'The Territory 1.5L EcoBoost uses Pin 8 for power, Pin 9 for ignition, and Pins 10 and 11 for ground.',
+  'Connecting the Ranger 2.5L NA requires power on Pin 1, ignition on Pin 2, and ground on Pins 3 and 4.',
+  'Older Escape, Focus, and Duratec models take power on Pin 15, ignition on Pin 6, and ground on Pin 61.',
+  'For the Explorer, power goes to Pin 103, ignition to Pin 105, and ground to Pin 116.',
+  'Finally, the Transit 2.2L TDCi needs power on Pin B20, ignition on Pin B22, and ground on Pins B23 and B24.',
+].join('\n');
+
+/**
+ * Automatically seeds and synchronizes the verified 10-platform Ford OEM Pinouts
+ * into the user's Firestore `diagnosticLogs` collection so both the Cloud Database
+ * and the Offline AI Voice Guide / MiniSearch RAG index always have this knowledge.
+ */
+export async function syncFordOemPinoutsToDatabase(uid: string): Promise<void> {
+  const logId = FORD_OEM_PINOUTS_DB_LOG_ID;
+  const path = `users/${uid}/diagnosticLogs/${logId}`;
+  const docRef = doc(db, 'users', uid, 'diagnosticLogs', logId);
+
+  try {
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      return;
+    }
+    await setDoc(docRef, {
+      id: logId,
+      ownerId: uid,
+      title:
+        'Ford / FoMoCo OEM Bench Pinouts (T6, EcoBlue, EcoSport, Fiesta, Focus, PowerShift TCM, Territory, Explorer, Transit)',
+      dtcCode: 'FORD-OEM-PINOUT',
+      ecuModel: 'Ford FoMoCo PCM / PowerShift TCM Suite',
+      sourceType: 'PINOUT_NOTE',
+      summary: FORD_OEM_PINOUTS_SUMMARY_TEXT,
+      sources: [],
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+

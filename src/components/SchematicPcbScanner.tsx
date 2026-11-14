@@ -27,6 +27,21 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { PowerSupplyState, InjectedFault } from '../types/ecu';
 import {
+  resolvePcbNetToMnaNode,
+  computePcbThermalMap,
+  measureDualProbePcb,
+  auditPcbDiagnostics,
+  computeComponentPinCoords,
+  computeContinuousTracePath,
+  convertOemProfileToPcbBoard,
+  type TracePoint,
+  type ExtendedImageAnalysisNet,
+  type PcbBoardPreset,
+  type ComponentThermalProfile,
+  type ProbeNodeTarget,
+} from '../simulation/pcb/PcbDiagnosticEngine';
+import { ECU_BRAND_PROFILES } from './ecuPinoutData';
+import {
   Upload,
   Cpu,
   ZoomIn,
@@ -65,6 +80,8 @@ import {
   Route,
   X,
   FileText,
+  ArrowLeftRight,
+  ShieldAlert,
 } from 'lucide-react';
 
 // ============================================================================
@@ -73,22 +90,7 @@ import {
 
 export type PcbPinSpec = ImageAnalysisPinSpec;
 export type DetailedPcbComponent = ImageAnalysisComponent;
-
-export interface TracePoint {
-  x: number;
-  y: number;
-}
-
-export interface ExtendedImageAnalysisNet extends ImageAnalysisNet {
-  /**
-   * Optional multi-branch segments for T-junctions and star grounds.
-   * Prevents SVG <polyline> from drawing false diagonal shortcuts across the PCB.
-   */
-  traceBranches?: TracePoint[][];
-  nominalVoltage?: number;
-  traceWidthMm?: number;
-  impedanceOhms?: number;
-}
+export type { TracePoint, ExtendedImageAnalysisNet, ComponentThermalProfile };
 
 export interface SchematicPcbScannerProps {
   onOpenGroundedSearch?: (query?: string, dtc?: string, ecu?: string) => void;
@@ -100,32 +102,9 @@ export interface SchematicPcbScannerProps {
   faults?: InjectedFault[];
 }
 
-interface SampleBoard {
-  id: string;
-  name: string;
-  type: string;
-  summary: string;
-  oemReference: string;
-  pcbSpecs: {
-    layers: number;
-    copperWeightOz: number;
-    substrate: string;
-    finish: string;
-  };
-  components: DetailedPcbComponent[];
-  nets: ExtendedImageAnalysisNet[];
-  hotspots: ImageAnalysisHotspot[];
-}
-
-export interface ComponentThermalProfile {
-  tempC: number;
-  powerDissipationMw: number;
-  thermalResistanceJa: number; // °C/W
-  status: 'NOMINAL' | 'ELEVATED' | 'WARNING' | 'CRITICAL_OVERHEAT';
-  dominantHeatSource: string;
-}
-
-type InteractionMode = 'EDIT' | 'PAN' | 'MACRO_CROP' | 'TRACE_EDIT' | 'TRACE_PATH';
+type SampleBoard = PcbBoardPreset;
+type InteractionMode = 'EDIT' | 'PAN' | 'PROBE' | 'MACRO_CROP' | 'TRACE_EDIT' | 'TRACE_PATH';
+type OpticalFilterMode = 'NORMAL' | 'CONTRAST' | 'UV_SILK' | 'XRAY';
 
 type InteractionDrag =
   | {
@@ -175,6 +154,7 @@ const SAMPLE_BOARDS: SampleBoard[] = [
     name: 'ECU 5V Power Supply & Clamping Stage',
     type: 'Automotive ECU Power Supply PCB',
     oemReference: 'Bosch ME7.5 / EDC16 Power Regulation Topology',
+    imageSrc: '/src/assets/images/pcb_ldo_stage_1794671232433.jpg',
     summary:
       'Infineon TLE4275G 5.0V Low-Dropout Regulator with B540C reverse-polarity Schottky barrier protection, SMBJ24CA ISO 7637-2 load-dump transient clamp, and low-ESR stability filtering.',
     pcbSpecs: {
@@ -190,7 +170,7 @@ const SAMPLE_BOARDS: SampleBoard[] = [
         marking: 'TLE4275G',
         decodedValue: '5.0V ±2% / 450mA Automotive LDO',
         packageType: 'TO-263-5 (D2PAK-5)',
-        bbox: { ymin: 333, xmin: 333, ymax: 667, xmax: 583 },
+        bbox: { ymin: 325, xmin: 410, ymax: 725, xmax: 605 },
         confidenceScore: 0.98,
         verificationStatus: 'VERIFIED',
         circuitFunction: 'Main ECU +5.00V Reference, Sensor Supply & MCU Logic Regulator',
@@ -251,7 +231,7 @@ const SAMPLE_BOARDS: SampleBoard[] = [
         marking: 'B540C',
         decodedValue: '40V / 5.0A Schottky Barrier Rectifier',
         packageType: 'SMC (DO-214AB)',
-        bbox: { ymin: 354, xmin: 111, ymax: 521, xmax: 250 },
+        bbox: { ymin: 365, xmin: 245, ymax: 665, xmax: 335 },
         confidenceScore: 0.96,
         verificationStatus: 'VERIFIED',
         circuitFunction: 'Series Reverse Battery Polarity Protection',
@@ -287,7 +267,7 @@ const SAMPLE_BOARDS: SampleBoard[] = [
         marking: '470uF 35V VT',
         decodedValue: '470 µF / 35V Low-ESR Aluminum Electrolytic',
         packageType: 'SMD V-Chip (10x10.2mm)',
-        bbox: { ymin: 583, xmin: 111, ymax: 813, xmax: 250 },
+        bbox: { ymin: 335, xmin: 18, ymax: 645, xmax: 225 },
         confidenceScore: 0.94,
         verificationStatus: 'VERIFIED',
         circuitFunction: 'Bulk Input Reservoir & Alternator Ripple Filter',
@@ -323,7 +303,7 @@ const SAMPLE_BOARDS: SampleBoard[] = [
         marking: '226C (22uF 16V)',
         decodedValue: '22 µF / 16V Automotive Tantalum',
         packageType: 'EIA 7343-31 (Case D)',
-        bbox: { ymin: 375, xmin: 653, ymax: 521, xmax: 778 },
+        bbox: { ymin: 380, xmin: 685, ymax: 650, xmax: 775 },
         confidenceScore: 0.92,
         verificationStatus: 'VERIFIED',
         circuitFunction: 'TLE4275G 5V Output Loop Compensation & Stability Filter',
@@ -359,7 +339,7 @@ const SAMPLE_BOARDS: SampleBoard[] = [
         marking: 'SMBJ24CA',
         decodedValue: '24V Standoff / 38.9V Clamp Bidirectional TVS',
         packageType: 'SMB (DO-214AA)',
-        bbox: { ymin: 625, xmin: 653, ymax: 771, xmax: 778 },
+        bbox: { ymin: 375, xmin: 800, ymax: 655, xmax: 905 },
         confidenceScore: 0.95,
         verificationStatus: 'VERIFIED',
         circuitFunction: 'ISO 7637-2 Pulse 5a/5b Load-Dump & Inductive Transient Clamp',
@@ -582,7 +562,7 @@ const SAMPLE_BOARDS: SampleBoard[] = [
         id: 'sample-ldo-thermal',
         label: 'LDO Linear Drop Dissipation Zone (U1 Tab)',
         severity: 'INFO',
-        bbox: { ymin: 320, xmin: 320, ymax: 680, xmax: 595 },
+        bbox: { ymin: 220, xmin: 375, ymax: 735, xmax: 635 },
         suspectComponentRef: 'U1',
         notes:
           'Normal linear power dissipation: P = (12.25V - 5.0V) × I_load. If 5V VREF is shorted to GND externally (e.g., chafed TPS/MAP harness), U1 hits current limit (~650mA) and thermally cycles at 150°C.',
@@ -592,7 +572,7 @@ const SAMPLE_BOARDS: SampleBoard[] = [
         id: 'sample-tvs-stress',
         label: 'Load-Dump Clamp Overvoltage Failure Zone',
         severity: 'WARNING',
-        bbox: { ymin: 610, xmin: 640, ymax: 790, xmax: 792 },
+        bbox: { ymin: 360, xmin: 790, ymax: 670, xmax: 915 },
         suspectComponentRef: 'TVS1',
         notes:
           'Verify bidirectional TVS1 resistance in-circuit (>10MΩ normal). A 24V truck jump-start or sustained alternator regulator runaway (>27V) causes TVS1 to fail as a dead short (<0.5Ω), blowing the KL30 fuse.',
@@ -605,6 +585,7 @@ const SAMPLE_BOARDS: SampleBoard[] = [
     name: 'High-Speed CAN Transceiver Stage',
     type: 'ISO 11898-2 High-Speed CAN Bus Interface PCB',
     oemReference: 'NXP TJA1050 / Bosch Controller Area Network Physical Layer',
+    imageSrc: '/src/assets/images/pcb_can_stage_1794671234715.jpg',
     summary:
       'NXP TJA1050 1 Mbps High-Speed CAN transceiver with dual 60.4Ω 1% split termination resistors (R1/R2) and 4.7nF common-mode EMI stabilization capacitor (C3) referenced to VREF (2.5V).',
     pcbSpecs: {
@@ -620,7 +601,7 @@ const SAMPLE_BOARDS: SampleBoard[] = [
         marking: 'TJA1050',
         decodedValue: 'High-Speed CAN Transceiver (1 Mbps ISO 11898-2)',
         packageType: 'SOIC-8',
-        bbox: { ymin: 396, xmin: 333, ymax: 688, xmax: 528 },
+        bbox: { ymin: 320, xmin: 325, ymax: 635, xmax: 610 },
         confidenceScore: 0.98,
         verificationStatus: 'VERIFIED',
         circuitFunction: 'Differential High-Speed CAN Bus Physical Layer Interface',
@@ -705,7 +686,7 @@ const SAMPLE_BOARDS: SampleBoard[] = [
         marking: '60R4',
         decodedValue: '60.4 Ω ±1% Precision Metal Film',
         packageType: '0805 (Metric 2012)',
-        bbox: { ymin: 354, xmin: 611, ymax: 458, xmax: 708 },
+        bbox: { ymin: 340, xmin: 690, ymax: 425, xmax: 820 },
         confidenceScore: 0.96,
         verificationStatus: 'VERIFIED',
         circuitFunction: 'CAN Split Termination Upper Arm (CANH to Split Node)',
@@ -741,7 +722,7 @@ const SAMPLE_BOARDS: SampleBoard[] = [
         marking: '60R4',
         decodedValue: '60.4 Ω ±1% Precision Metal Film',
         packageType: '0805 (Metric 2012)',
-        bbox: { ymin: 604, xmin: 611, ymax: 708, xmax: 708 },
+        bbox: { ymin: 545, xmin: 690, ymax: 625, xmax: 820 },
         confidenceScore: 0.96,
         verificationStatus: 'VERIFIED',
         circuitFunction: 'CAN Split Termination Lower Arm (CANL to Split Node)',
@@ -777,7 +758,7 @@ const SAMPLE_BOARDS: SampleBoard[] = [
         marking: '4n7',
         decodedValue: '4.7 nF / 50V C0G/NP0 MLCC',
         packageType: '0603 (Metric 1608)',
-        bbox: { ymin: 479, xmin: 764, ymax: 583, xmax: 833 },
+        bbox: { ymin: 420, xmin: 870, ymax: 560, xmax: 920 },
         confidenceScore: 0.93,
         verificationStatus: 'VERIFIED',
         circuitFunction: 'Split Termination Common-Mode HF Noise Filter Capacitor',
@@ -955,7 +936,7 @@ const SAMPLE_BOARDS: SampleBoard[] = [
         id: 'sample-can-esd',
         label: 'CANH/CANL ESD & Short-to-Battery Stress Zone',
         severity: 'INFO',
-        bbox: { ymin: 410, xmin: 495, ymax: 660, xmax: 550 },
+        bbox: { ymin: 315, xmin: 315, ymax: 645, xmax: 620 },
         suspectComponentRef: 'U2',
         notes:
           'Measure differential resistance across R1+R2 (120.8Ω local, 60Ω on complete bus) and diode drop from CANH/CANL (Pins 6 & 7) to GND. Shorted internal ESD clamp locks bus dominant or silent.',
@@ -963,7 +944,297 @@ const SAMPLE_BOARDS: SampleBoard[] = [
       },
     ],
   },
+  {
+    id: 'sample-injector-stage',
+    name: 'Injector MOSFET & Flyback Clamp Stage',
+    type: 'Low-Side Smart Power Actuator Driver PCB',
+    oemReference: 'Infineon BTS141 / Bosch Fuel Injector Driver Topology',
+    imageSrc: '/src/assets/images/pcb_injector_stage_1794671235614.jpg',
+    summary:
+      'Low-side smart power MOSFET injector sink (Q1 BTS141) wired to ECU Pin #10 (INJ_1), protected by a 45V active inductive flyback clamp (D2 SMBJ45A) and 50mΩ current-sense shunt (R3 0R05).',
+    pcbSpecs: {
+      layers: 4,
+      copperWeightOz: 2.0,
+      substrate: 'High-Tg FR4 w/ 2oz Heavy Copper Drain Pour',
+      finish: 'ENIG Automotive High-Current',
+    },
+    components: [
+      {
+        refDes: 'Q1',
+        category: 'MOSFET_DRIVER',
+        marking: 'BTS141',
+        decodedValue: '60V / 25A Smart Low-Side HITFET',
+        packageType: 'TO-252-3 (DPAK)',
+        bbox: { ymin: 240, xmin: 410, ymax: 625, xmax: 595 },
+        confidenceScore: 0.98,
+        verificationStatus: 'VERIFIED',
+        circuitFunction: 'Low-Side Fuel Injector Solenoid Sink & Thermal-Protected Switch',
+        terminalIds: ['Q1-G', 'Q1-D', 'Q1-S'],
+        notes:
+          'Drives ECU Pin #10 (INJ_1) low during injection dwell pulses (2.5–3.8ms) and integrates overtemperature/overcurrent protection.',
+        operatingVoltageRange: '60V VDS Max (Active clamp ~48V)',
+        maxCurrentRating: '25 A Peak / 28 mΩ Rds(on)',
+        datasheetSummary:
+          'Logic-level gate drive from 5V MCU buffer; internal active Zener drain-to-gate clamp limits inductive solenoid flyback below 55V.',
+        source: 'MANUAL',
+        pinSpecs: [
+          {
+            pinNumber: 1,
+            pinName: 'GATE (IN)',
+            category: 'signal_in',
+            nominalVoltage: 5.0,
+            connectedNetId: 'NET_5V_REGULATED',
+            notes: '5V PWM gate command via 100Ω gate drive resistor',
+          },
+          {
+            pinNumber: 2,
+            pinName: 'DRAIN (INJ_1)',
+            category: 'driver_out',
+            nominalVoltage: 12.25,
+            connectedNetId: 'NET_INJ_1_LOW',
+            notes: 'Connects directly to ECU Pin #10 (INJ_1) low-side injector coil return',
+          },
+          {
+            pinNumber: 3,
+            pinName: 'SOURCE (SENSE)',
+            category: 'ground',
+            nominalVoltage: 0.0,
+            connectedNetId: 'NET_SHUNT_SENSE',
+            notes: 'Returns injector sink current through 50mΩ shunt R3 to Chassis GND',
+          },
+        ],
+      },
+      {
+        refDes: 'R3',
+        category: 'SHUNT_RESISTOR',
+        marking: '0R05',
+        decodedValue: '0.05 Ω ±1% / 2W Current-Sense Shunt',
+        packageType: '2512 Kelvin SMD',
+        bbox: { ymin: 695, xmin: 375, ymax: 875, xmax: 635 },
+        confidenceScore: 0.96,
+        verificationStatus: 'VERIFIED',
+        circuitFunction: 'Injector Peak/Hold Current Monitoring Shunt',
+        terminalIds: ['R3-1', 'R3-2'],
+        notes: 'Generates 50mV per Amp feedback to ECU current-limit comparator.',
+        operatingVoltageRange: '2W Continuous Power',
+        maxCurrentRating: '6.3 A RMS',
+        datasheetSummary: 'Manganin precision low-TCR shunt resistor (0.05Ω). Check for cracked end-caps on misfire DTC P0201.',
+        source: 'MANUAL',
+        pinSpecs: [
+          {
+            pinNumber: 1,
+            pinName: 'KELVIN (+)',
+            category: 'ground',
+            nominalVoltage: 0.05,
+            connectedNetId: 'NET_SHUNT_SENSE',
+            notes: 'MOSFET Source Kelvin sense tap',
+          },
+          {
+            pinNumber: 2,
+            pinName: 'GND (-)',
+            category: 'ground',
+            nominalVoltage: 0.0,
+            connectedNetId: 'NET_CHASSIS_GND',
+            notes: 'Power ground plane return (KL31)',
+          },
+        ],
+      },
+      {
+        refDes: 'D2',
+        category: 'ZENER_CLAMP',
+        marking: 'SMBJ45A',
+        decodedValue: '45V Unidirectional Flyback TVS Clamp',
+        packageType: 'SMB (DO-214AA)',
+        bbox: { ymin: 315, xmin: 715, ymax: 605, xmax: 825 },
+        confidenceScore: 0.95,
+        verificationStatus: 'VERIFIED',
+        circuitFunction: 'External Solenoid Inductive Kickback Clamp',
+        terminalIds: ['D2-K', 'D2-A'],
+        notes: 'Limits inductive flyback spikes on INJ_1 (#10) during rapid MOSFET turn-off.',
+        operatingVoltageRange: '45V Standoff / 50V Breakdown',
+        maxCurrentRating: '600 W Peak Pulse',
+        datasheetSummary: 'Fast-recovery avalanche clamp protecting Q1 drain during inductive load turn-off.',
+        source: 'MANUAL',
+        pinSpecs: [
+          {
+            pinNumber: 1,
+            pinName: 'CATHODE (K)',
+            category: 'driver_out',
+            nominalVoltage: 12.25,
+            connectedNetId: 'NET_INJ_1_LOW',
+            notes: 'Clamps high-voltage inductive spike on INJ_1 drain pour',
+          },
+          {
+            pinNumber: 2,
+            pinName: 'ANODE (A)',
+            category: 'ground',
+            nominalVoltage: 0.0,
+            connectedNetId: 'NET_CHASSIS_GND',
+            notes: 'Chassis ground clamp return',
+          },
+        ],
+      },
+      {
+        refDes: 'C4',
+        category: 'CAPACITOR',
+        marking: '104K 50V',
+        decodedValue: '100 nF / 50V X7R Snubber MLCC',
+        packageType: '0805 SMD',
+        bbox: { ymin: 405, xmin: 205, ymax: 595, xmax: 275 },
+        confidenceScore: 0.93,
+        verificationStatus: 'VERIFIED',
+        circuitFunction: 'Gate Drive & 5V Logic Decoupling Capacitor',
+        terminalIds: ['C4-1', 'C4-2'],
+        notes: 'Suppresses dV/dt ringing on MOSFET gate bus.',
+        operatingVoltageRange: '50V DC X7R AEC-Q200',
+        maxCurrentRating: 'N/A',
+        datasheetSummary: 'Automotive MLCC flex-termination capacitor preventing solder-flex cracking.',
+        source: 'MANUAL',
+        pinSpecs: [
+          {
+            pinNumber: 1,
+            pinName: 'VCC',
+            category: 'power',
+            nominalVoltage: 5.0,
+            connectedNetId: 'NET_5V_REGULATED',
+            notes: '5V gate buffer supply rail',
+          },
+          {
+            pinNumber: 2,
+            pinName: 'GND',
+            category: 'ground',
+            nominalVoltage: 0.0,
+            connectedNetId: 'NET_CHASSIS_GND',
+            notes: 'Signal ground return',
+          },
+        ],
+      },
+    ],
+    nets: [
+      {
+        name: 'NET_INJ_1_LOW',
+        signalType: 'ACTUATOR_PWM',
+        nominalVoltage: 12.25,
+        traceWidthMm: 2.5,
+        impedanceOhms: 0.02,
+        connectedComponentRefs: ['Q1', 'D2'],
+        connectedTerminalIds: ['Q1-D', 'D2-K'],
+        tracePoints: [
+          { x: 590, y: 510 },
+          { x: 645, y: 510 },
+          { x: 645, y: 440 },
+          { x: 690, y: 440 },
+        ],
+        traceBranches: [
+          [
+            { x: 590, y: 510 },
+            { x: 645, y: 510 },
+            { x: 645, y: 440 },
+            { x: 690, y: 440 },
+          ],
+        ],
+        confidenceScore: 0.97,
+        verificationStatus: 'VERIFIED',
+        isComplete: true,
+      },
+      {
+        name: 'NET_5V_REGULATED',
+        signalType: '5V_LOGIC',
+        nominalVoltage: 5.0,
+        traceWidthMm: 0.6,
+        impedanceOhms: 0.05,
+        connectedComponentRefs: ['C4', 'Q1'],
+        connectedTerminalIds: ['C4-1', 'Q1-G'],
+        tracePoints: [
+          { x: 265, y: 480 },
+          { x: 325, y: 480 },
+          { x: 325, y: 435 },
+          { x: 380, y: 435 },
+        ],
+        traceBranches: [
+          [
+            { x: 265, y: 480 },
+            { x: 325, y: 480 },
+            { x: 325, y: 435 },
+            { x: 380, y: 435 },
+          ],
+        ],
+        confidenceScore: 0.95,
+        verificationStatus: 'VERIFIED',
+        isComplete: true,
+      },
+      {
+        name: 'NET_SHUNT_SENSE',
+        signalType: 'SIGNAL_TRACE',
+        nominalVoltage: 0.05,
+        traceWidthMm: 2.0,
+        impedanceOhms: 0.015,
+        connectedComponentRefs: ['Q1', 'R3'],
+        connectedTerminalIds: ['Q1-S', 'R3-1'],
+        tracePoints: [
+          { x: 485, y: 660 },
+          { x: 485, y: 710 },
+        ],
+        traceBranches: [
+          [
+            { x: 485, y: 660 },
+            { x: 485, y: 710 },
+          ],
+        ],
+        confidenceScore: 0.96,
+        verificationStatus: 'VERIFIED',
+        isComplete: true,
+      },
+      {
+        name: 'NET_CHASSIS_GND',
+        signalType: 'GROUND',
+        nominalVoltage: 0.0,
+        traceWidthMm: 3.5,
+        impedanceOhms: 0.008,
+        connectedComponentRefs: ['C4', 'R3', 'D2'],
+        connectedTerminalIds: ['C4-2', 'R3-2', 'D2-A'],
+        tracePoints: [
+          { x: 215, y: 540 },
+          { x: 215, y: 875 },
+          { x: 485, y: 875 },
+          { x: 758, y: 875 },
+          { x: 758, y: 515 },
+        ],
+        traceBranches: [
+          [
+            { x: 215, y: 540 },
+            { x: 215, y: 875 },
+            { x: 758, y: 875 },
+            { x: 758, y: 515 },
+          ],
+          [
+            { x: 485, y: 830 },
+            { x: 485, y: 875 },
+          ],
+        ],
+        confidenceScore: 0.97,
+        verificationStatus: 'VERIFIED',
+        isComplete: true,
+      },
+    ],
+    hotspots: [
+      {
+        id: 'sample-inj-drain-thermal',
+        label: 'Q1 Drain Flyback & Short-to-VBAT Stress Zone',
+        severity: 'WARNING',
+        bbox: { ymin: 155, xmin: 300, ymax: 645, xmax: 700 },
+        suspectComponentRef: 'Q1',
+        notes:
+          'Check INJ_1 (#10) injector coil resistance (11–16Ω petrol) before powering ECU. A shorted injector coil pulls Q1 into thermal foldback.',
+        source: 'AI',
+      },
+    ],
+  },
 ];
+
+const OEM_PCB_BOARDS: SampleBoard[] = ECU_BRAND_PROFILES.filter(
+  (p) => Boolean(p.pcbImageSrc && p.pcbComponents && p.pcbComponents.length > 0)
+).map((p) => convertOemProfileToPcbBoard(p));
 
 // ============================================================================
 // MAIN COMPONENT
@@ -995,8 +1266,11 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
   const [statusMessage, setStatusMessage] = useState<string>(
     'AI & LOCAL CV ENGINE ONLINE · Drag boxes to adjust, hover pins to trace nets, or upload any ECU PCB photo'
   );
-  const [uploadedImageUrl, setUploadedImageUrl] = useState<string | null>(null);
-  const [boardAspect, setBoardAspect] = useState<number>(1.5); // width / height
+  const [uploadedImageUrl, setUploadedImageUrl] = useState<string | null>(
+    SAMPLE_BOARDS[0].imageSrc || null
+  );
+  const [boardAspect, setBoardAspect] = useState<number>(4 / 3); // width / height
+  const [showPhotoTexture, setShowPhotoTexture] = useState<boolean>(true);
 
   // Selection & Highlighting State
   const [selectedCompRef, setSelectedCompRef] = useState<string | null>('U1');
@@ -1027,10 +1301,15 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [filterMode, setFilterMode] = useState<'ALL' | 'VERIFIED' | 'UNVERIFIED'>('ALL');
   const [mobileTab, setMobileTab] = useState<'CANVAS' | 'DRAWER'>('CANVAS');
-  const [inspectorSubTab, setInspectorSubTab] = useState<'PART' | 'NETS' | 'HOTSPOTS' | 'THERMAL'>('PART');
+  const [inspectorSubTab, setInspectorSubTab] = useState<'PART' | 'NETS' | 'PROBE' | 'AUDIT' | 'THERMAL'>('PART');
 
-  // Interactive Modes & Layer Visibility
+  // Interactive Modes, Optical Filters & Layer Visibility
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('EDIT');
+  const [opticalFilter, setOpticalFilter] = useState<OpticalFilterMode>('NORMAL');
+  const [showAddPartMenu, setShowAddPartMenu] = useState(false);
+  const [probeA, setProbeA] = useState<ProbeNodeTarget | null>(null);
+  const [probeB, setProbeB] = useState<ProbeNodeTarget | null>(null);
+  const [nextProbeSlot, setNextProbeSlot] = useState<'A' | 'B'>('A');
   const [cropMarquee, setCropMarquee] = useState<PcbNormalizedBox | null>(null);
   const [showComponents, setShowComponents] = useState(true);
   const [showNets, setShowNets] = useState(true);
@@ -1097,252 +1376,91 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
   }, [uploadedImageUrl]);
 
   // ============================================================================
-  // LIVE MNA NODE VOLTAGE & ELECTRO-THERMAL PHYSICS ENGINE
+  // LIVE MNA NODE VOLTAGE, ELECTRO-THERMAL, DUAL-PROBE & AUDIT ENGINE
   // ============================================================================
 
-  /**
-   * Resolves both the exact MNA-solved voltage and the mapped MNA circuit node ID
-   * for any PCB net or component pin node.
-   */
   const resolveMnaNodeDetails = useCallback(
-    (
-      netName: string | undefined,
-      fallbackNominal: number
-    ): { voltage: number; mnaNodeId: string } => {
-      const isPowered = powerSupply?.isOutputEnabled ?? true;
-      if (!isPowered) {
-        return { voltage: 0.0, mnaNodeId: 'bench-vbat (OFF · 0.000V)' };
-      }
-
-      const benchVoltage =
-        nodeVoltages && typeof nodeVoltages['bench-vbat'] === 'number'
-          ? nodeVoltages['bench-vbat']
-          : (powerSupply?.voltageSetting ?? 12.6);
-
-      if (netName) {
-        if (nodeVoltages && typeof nodeVoltages[netName] === 'number') {
-          return { voltage: nodeVoltages[netName], mnaNodeId: netName };
-        }
-        const upper = netName.toUpperCase();
-
-        if (upper.includes('GND') || upper.includes('KL31')) {
-          const vGnd =
-            nodeVoltages && typeof nodeVoltages['ecu-pin-1'] === 'number'
-              ? nodeVoltages['ecu-pin-1']
-              : 0.0;
-          return { voltage: vGnd, mnaNodeId: 'ecu-pin-1 (KL31 Chassis GND)' };
-        }
-
-        if (upper.includes('RAW_KL30')) {
-          const vKl30 =
-            nodeVoltages && typeof nodeVoltages['ecu-pin-3'] === 'number'
-              ? nodeVoltages['ecu-pin-3']
-              : benchVoltage;
-          return { voltage: vKl30, mnaNodeId: 'ecu-pin-3 (KL30 Battery +12V)' };
-        }
-
-        if (upper.includes('KL30') || upper.includes('VBAT')) {
-          const vKl30 =
-            nodeVoltages && typeof nodeVoltages['ecu-pin-3'] === 'number'
-              ? nodeVoltages['ecu-pin-3']
-              : benchVoltage;
-          const vProtected = vKl30 > 0.35 ? Math.max(0, vKl30 - 0.35) : 0.0;
-          return {
-            voltage: vProtected,
-            mnaNodeId: 'ecu-pin-3 (KL30 − 0.35V D1 Schottky)',
-          };
-        }
-
-        if (
-          upper.includes('5V') ||
-          upper.includes('VREF_5V') ||
-          upper.includes('REGULATED') ||
-          upper.includes('MCU_RESET') ||
-          upper.includes('MCU_TX') ||
-          upper.includes('MCU_RX')
-        ) {
-          if (nodeVoltages && typeof nodeVoltages['ecu-pin-5'] === 'number') {
-            return {
-              voltage: nodeVoltages['ecu-pin-5'],
-              mnaNodeId: 'ecu-pin-5 (VREF_5V LDO Rail)',
-            };
-          }
-          const vIn = benchVoltage > 0.35 ? benchVoltage - 0.35 : 0;
-          const vReg = vIn >= 5.25 ? 5.0 : vIn > 0.5 ? Math.max(0, vIn - 0.25) : 0.0;
-          return { voltage: vReg, mnaNodeId: 'ecu-pin-5 (VREF_5V LDO Rail)' };
-        }
-
-        if (upper.includes('DELAY_CAP')) {
-          const v5 =
-            nodeVoltages && typeof nodeVoltages['ecu-pin-5'] === 'number'
-              ? nodeVoltages['ecu-pin-5']
-              : 5.0;
-          return {
-            voltage: +(v5 * 0.42).toFixed(3),
-            mnaNodeId: 'U1-D (TLE4275G Delay Threshold)',
-          };
-        }
-
-        if (upper.includes('CAN_HIGH') || upper.includes('CANH')) {
-          const vCanH =
-            nodeVoltages && typeof nodeVoltages['ecu-pin-13'] === 'number'
-              ? nodeVoltages['ecu-pin-13']
-              : fallbackNominal;
-          return { voltage: vCanH, mnaNodeId: 'ecu-pin-13 (CAN_H Bus Node)' };
-        }
-
-        if (upper.includes('CAN_LOW') || upper.includes('CANL')) {
-          const vCanL =
-            nodeVoltages && typeof nodeVoltages['ecu-pin-14'] === 'number'
-              ? nodeVoltages['ecu-pin-14']
-              : fallbackNominal;
-          return { voltage: vCanL, mnaNodeId: 'ecu-pin-14 (CAN_L Bus Node)' };
-        }
-
-        if (upper.includes('CAN_SPLIT')) {
-          const vCanH =
-            nodeVoltages && typeof nodeVoltages['ecu-pin-13'] === 'number'
-              ? nodeVoltages['ecu-pin-13']
-              : 2.5;
-          const vCanL =
-            nodeVoltages && typeof nodeVoltages['ecu-pin-14'] === 'number'
-              ? nodeVoltages['ecu-pin-14']
-              : 2.5;
-          return {
-            voltage: +((vCanH + vCanL) * 0.5).toFixed(3),
-            mnaNodeId: '0.5 × (ecu-pin-13 + ecu-pin-14) Split Tap',
-          };
-        }
-      }
-
-      return { voltage: fallbackNominal, mnaNodeId: netName || 'Local PCB Node' };
-    },
+    (netName: string | undefined, fallbackNominal: number) =>
+      resolvePcbNetToMnaNode(netName, fallbackNominal, nodeVoltages, powerSupply),
     [nodeVoltages, powerSupply]
   );
 
-  /**
-   * Resolves the real-time voltage of a PCB net by bridging bench MNA nodeVoltages
-   * and powerSupply state with the board's nominal net specification.
-   */
   const resolveLiveNetVoltage = useCallback(
-    (netName: string | undefined, fallbackNominal: number): number => {
-      return resolveMnaNodeDetails(netName, fallbackNominal).voltage;
-    },
-    [resolveMnaNodeDetails]
+    (netName: string | undefined, fallbackNominal: number): number =>
+      resolvePcbNetToMnaNode(netName, fallbackNominal, nodeVoltages, powerSupply).voltage,
+    [nodeVoltages, powerSupply]
   );
 
-  /**
-   * Computes physically accurate component junction/case temperature (T_J = T_A + P_D * R_thetaJA)
-   * using real semiconductor dissipation models rather than arbitrary linear heuristics.
-   */
-  const componentThermalMap = useMemo<Record<string, ComponentThermalProfile>>(() => {
-    const map: Record<string, ComponentThermalProfile> = {};
-    const isPowered = powerSupply?.isOutputEnabled ?? true;
-    const vBatRaw = isPowered ? (powerSupply?.voltageSetting ?? 12.6) : 0.0;
-    const iLoadAmps = isPowered ? Math.max(0.04, supplyCurrentDrawAmps ?? 0.18) : 0.0;
+  const componentThermalMap = useMemo<Record<string, ComponentThermalProfile>>(
+    () =>
+      computePcbThermalMap({
+        components,
+        powerSupply,
+        supplyCurrentDrawAmps,
+        nodeVoltages,
+        faults,
+        ambientTempC,
+      }),
+    [components, powerSupply, supplyCurrentDrawAmps, nodeVoltages, faults, ambientTempC]
+  );
 
-    for (const comp of components) {
-      if (!isPowered || vBatRaw < 0.5) {
-        map[comp.refDes] = {
-          tempC: ambientTempC,
-          powerDissipationMw: 0,
-          thermalResistanceJa: 45,
-          status: 'NOMINAL',
-          dominantHeatSource: 'Bench Power OFF (Ambient Equilibrium)',
-        };
-        continue;
+  const dualProbeMeasurement = useMemo(() => {
+    if (!probeA || !probeB) return null;
+    return measureDualProbePcb({
+      probeA,
+      probeB,
+      components,
+      nets,
+      nodeVoltages,
+      powerSupply,
+      faults,
+    });
+  }, [probeA, probeB, components, nets, nodeVoltages, powerSupply, faults]);
+
+  const boardAuditFindings = useMemo(
+    () =>
+      auditPcbDiagnostics({
+        components,
+        nets,
+        hotspots,
+        thermalMap: componentThermalMap,
+        nodeVoltages,
+        powerSupply,
+        faults,
+      }),
+    [components, nets, hotspots, componentThermalMap, nodeVoltages, powerSupply, faults]
+  );
+
+  const peakBoardTempC = useMemo(() => {
+    const temps = Object.values(componentThermalMap).map((t) => t.tempC);
+    return temps.length > 0 ? Math.max(...temps) : ambientTempC;
+  }, [componentThermalMap, ambientTempC]);
+
+  const criticalAuditCount = useMemo(
+    () => boardAuditFindings.filter((f) => f.severity === 'CRITICAL').length,
+    [boardAuditFindings]
+  );
+
+  const handlePlaceProbe = useCallback(
+    (target: ProbeNodeTarget) => {
+      if (nextProbeSlot === 'A') {
+        setProbeA(target);
+        setNextProbeSlot('B');
+        setInspectorSubTab('PROBE');
+        setStatusMessage(
+          `PROBE A (RED) anchored on ${target.label} [${target.netId}] — click a second node for Probe B (BLACK).`
+        );
+      } else {
+        setProbeB(target);
+        setNextProbeSlot('A');
+        setInspectorSubTab('PROBE');
+        setStatusMessage(
+          `DUAL PROBE ACTIVE: A (${probeA?.label || 'Node A'}) ↔ B (${target.label})`
+        );
       }
-
-      const hasDirectFault = faults?.some((f) =>
-        comp.pinSpecs?.some(
-          (p) =>
-            (p.connectedNetId && f.pinId && p.connectedNetId.includes(f.pinId)) ||
-            (f.pinId && f.pinId.includes(comp.refDes))
-        )
-      );
-
-      const cat = comp.category.toUpperCase();
-      let powerMw = 15;
-      let rThetaJa = 55; // °C/W
-      let heatSource = 'Quiescent biasing';
-
-      if (cat.includes('REGULATOR') || comp.marking.toUpperCase().includes('TLE4275')) {
-        // Linear LDO Regulator: P_D = (V_IN - V_OUT) * I_LOAD + (V_IN * I_Q)
-        const vIn = Math.max(0, vBatRaw - 0.35);
-        const vOut = resolveLiveNetVoltage('NET_5V_REGULATED', 5.0);
-        const vDrop = Math.max(0.25, vIn - vOut);
-        const regCurrent = hasDirectFault ? 0.65 : Math.min(0.45, iLoadAmps);
-        const iQuiescent = 0.002;
-        powerMw = (vDrop * regCurrent + vIn * iQuiescent) * 1000;
-        rThetaJa = 38; // TO-263-5 soldered to 2oz copper ground plane
-        heatSource = hasDirectFault
-          ? '5V Rail Short-Circuit Current Limiting (650mA)'
-          : `Linear drop (${vDrop.toFixed(2)}V × ${Math.round(regCurrent * 1000)}mA)`;
-      } else if (cat.includes('TVS') || comp.refDes.toUpperCase().includes('TVS')) {
-        // Bidirectional TVS (SMBJ24CA): Zero conduction below 24V standoff unless overvoltage or faulted
-        rThetaJa = 75;
-        if (hasDirectFault) {
-          powerMw = 1450;
-          heatSource = 'Shorted TVS Junction Fault';
-        } else if (vBatRaw > 26.7) {
-          // Avalanche clamping above breakdown
-          const clampCurrent = (vBatRaw - 26.7) / 1.5;
-          powerMw = vBatRaw * clampCurrent * 1000;
-          heatSource = `Avalanche Overvoltage Clamping (${vBatRaw.toFixed(1)}V > 26.7V VBR)`;
-        } else {
-          // Normal 12V-14.8V operation: < 1µA leakage -> 0mW heating!
-          powerMw = 0.02;
-          heatSource = 'Standby Zero-Conduction (<1µA leakage below 24V VWM)';
-        }
-      } else if (cat.includes('DIODE')) {
-        // Series Schottky Diode (B540C): P_D = V_F * I_LOAD
-        rThetaJa = 55; // SMC package
-        const vf = 0.35;
-        const iFwd = hasDirectFault ? 2.2 : iLoadAmps;
-        powerMw = vf * iFwd * 1000;
-        heatSource = `Forward conduction (${vf}V Vf × ${Math.round(iFwd * 1000)}mA)`;
-      } else if (cat.includes('CAN_TRANSCEIVER') || comp.marking.toUpperCase().includes('TJA1050')) {
-        // High-Speed CAN Transceiver: ~5V * 28mA average (50% dominant duty cycle)
-        rThetaJa = 110; // SOIC-8
-        const iCan = hasDirectFault ? 0.14 : 0.028;
-        powerMw = 5.0 * iCan * 1000;
-        heatSource = hasDirectFault
-          ? 'Bus Short-to-Battery / Driver Output Overload'
-          : 'Differential Bus Driver Switching (28mA avg @ 5V)';
-      } else if (cat.includes('RESISTOR')) {
-        // Termination Resistor (60.4Ω): During dominant state (~1V drop across each 60.4Ω arm, ~50% duty)
-        rThetaJa = 140; // 0805 SMD
-        const vDiffArm = hasDirectFault ? 6.0 : 0.7; // RMS voltage across single split resistor
-        powerMw = ((vDiffArm * vDiffArm) / 60.4) * 1000;
-        heatSource = 'Joule heating (V²/R differential bus termination)';
-      } else if (cat.includes('CAPACITOR') || cat.includes('ELECTROLYTIC')) {
-        // Capacitor ripple heating: P_D = I_ripple^2 * ESR
-        rThetaJa = 65;
-        const esr = cat.includes('ELECTROLYTIC') ? 0.15 : 0.8;
-        const iRipple = hasDirectFault ? 1.2 : 0.08;
-        powerMw = iRipple * iRipple * esr * 1000;
-        heatSource = `ESR Ripple Dissipation (I_rms² × ${esr}Ω ESR)`;
-      }
-
-      const deltaT = (powerMw / 1000) * rThetaJa;
-      const tempC = Math.min(165, Math.max(ambientTempC, +(ambientTempC + deltaT).toFixed(1)));
-
-      let status: ComponentThermalProfile['status'] = 'NOMINAL';
-      if (tempC >= 115) status = 'CRITICAL_OVERHEAT';
-      else if (tempC >= 80) status = 'WARNING';
-      else if (tempC >= 50) status = 'ELEVATED';
-
-      map[comp.refDes] = {
-        tempC,
-        powerDissipationMw: Math.round(powerMw),
-        thermalResistanceJa: rThetaJa,
-        status,
-        dominantHeatSource: heatSource,
-      };
-    }
-
-    return map;
-  }, [components, powerSupply, supplyCurrentDrawAmps, faults, ambientTempC, resolveLiveNetVoltage]);
+    },
+    [nextProbeSlot, probeA]
+  );
 
   // ============================================================================
   // IMAGE PROCESSING, HYBRID VISION & MACRO CROP PIPELINE
@@ -1408,27 +1526,47 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
     }
   };
 
-  // Load Sample Preset
+  // Load Sample or OEM Board Preset
   const loadSample = (board: SampleBoard) => {
     setSelectedBoard(board);
     setBoardTitle(board.name);
     setBoardType(board.type);
     setAnalysisSummary(board.summary);
-    setAnalysisModel('preset-reference');
+    setAnalysisModel(board.imageSrc ? 'oem-board-reference' : 'preset-reference');
     setComponents(board.components);
     setNets(board.nets);
     setHotspots(board.hotspots);
-    setUploadedImageUrl(null);
+    setUploadedImageUrl(board.imageSrc || null);
     setBoardAspect(1.5);
     setInteractionMode('EDIT');
     setCropMarquee(null);
+    setProbeA(null);
+    setProbeB(null);
+    setNextProbeSlot('A');
     setSelectedCompRef(board.components[0]?.refDes || null);
     setActiveNetId(board.nets[0]?.name || null);
     setSelectedPinNumber(board.components[0]?.pinSpecs?.[0]?.pinNumber || 1);
-    setSelectedHotspotId(null);
+    setSelectedHotspotId(board.hotspots[0]?.id || null);
     setTracePathPair([null, null]);
     setClickedDatasheetNode(null);
-    setStatusMessage(`Loaded OEM Reference Preset: ${board.name}`);
+    setStatusMessage(
+      board.imageSrc
+        ? `Loaded OEM ECU PCB Photography: ${board.name} (${board.components.length} mapped stages)`
+        : `Loaded Reference Stage Preset: ${board.name}`
+    );
+  };
+
+  const handleFitBoardToViewport = () => {
+    const vp = viewportScrollRef.current;
+    if (!vp) {
+      setZoomLevel(1.0);
+      return;
+    }
+    const availW = Math.max(320, vp.clientWidth - 48);
+    const availH = Math.max(260, vp.clientHeight - 72);
+    const baseH = 740 / Math.max(0.5, Math.min(2.2, boardAspect));
+    const fitZoom = Math.min(availW / 740, availH / baseH);
+    setZoomLevel(Math.min(2.4, Math.max(0.55, Number(fitZoom.toFixed(2)))));
   };
 
   // Automatic Upload & Hybrid Vision Mapping
@@ -1765,40 +1903,145 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
   // COMPONENT, PIN & NET EDITING ACTIONS
   // ============================================================================
 
-  const handleAddManualComponent = () => {
+  const handleAddCustomComponent = (
+    template:
+      | 'TEST_POINT'
+      | 'MOSFET_DRIVER'
+      | 'VOLTAGE_REGULATOR'
+      | 'RESISTOR'
+      | 'CAPACITOR'
+      | 'DIODE'
+  ) => {
     const nextIndex = components.length + 1;
-    const refDes = `TP${nextIndex}`;
+    const prefixMap: Record<typeof template, string> = {
+      TEST_POINT: 'TP',
+      MOSFET_DRIVER: 'Q',
+      VOLTAGE_REGULATOR: 'U',
+      RESISTOR: 'R',
+      CAPACITOR: 'C',
+      DIODE: 'D',
+    };
+    let refDes = `${prefixMap[template]}${nextIndex}`;
+    let bump = nextIndex;
+    while (components.some((c) => c.refDes === refDes)) {
+      bump++;
+      refDes = `${prefixMap[template]}${bump}`;
+    }
+
+    const defaultNet = activeNetId || 'NET_5V_REGULATED';
+    const specPresets: Record<
+      typeof template,
+      {
+        marking: string;
+        decodedValue: string;
+        packageType: string;
+        circuitFunction: string;
+        vRange: string;
+        pins: PcbPinSpec[];
+      }
+    > = {
+      TEST_POINT: {
+        marking: refDes,
+        decodedValue: 'Technician Probe Pad',
+        packageType: 'SMD Test Pad (1.5mm)',
+        circuitFunction: 'Manual Technician Oscilloscope / Multimeter Test Point',
+        vRange: '0V – 42V DC',
+        pins: [
+          {
+            pinNumber: 1,
+            pinName: 'PAD',
+            category: 'signal_in',
+            nominalVoltage: 5.0,
+            connectedNetId: defaultNet,
+            notes: 'Direct probe test point pad',
+          },
+        ],
+      },
+      MOSFET_DRIVER: {
+        marking: 'BTS141',
+        decodedValue: '60V / 25A Low-Side Smart MOSFET',
+        packageType: 'TO-252-3 (DPAK)',
+        circuitFunction: 'Low-Side Actuator / Solenoid Sink Switch',
+        vRange: '60V VDS Max',
+        pins: [
+          { pinNumber: 1, pinName: 'GATE', category: 'signal_in', nominalVoltage: 5.0, connectedNetId: 'NET_5V_REGULATED', notes: '5V MCU gate drive' },
+          { pinNumber: 2, pinName: 'DRAIN', category: 'driver_out', nominalVoltage: 12.25, connectedNetId: 'NET_INJ_1_LOW', notes: 'Actuator low-side drain' },
+          { pinNumber: 3, pinName: 'SOURCE', category: 'ground', nominalVoltage: 0.0, connectedNetId: 'NET_CHASSIS_GND', notes: 'Ground return' },
+        ],
+      },
+      VOLTAGE_REGULATOR: {
+        marking: 'TLE4275G',
+        decodedValue: '5.0V ±2% Automotive LDO',
+        packageType: 'TO-263-5',
+        circuitFunction: 'ECU +5V Regulated Logic Supply',
+        vRange: '5.5V – 42V DC',
+        pins: [
+          { pinNumber: 1, pinName: 'VIN', category: 'power', nominalVoltage: 12.25, connectedNetId: 'NET_KL30_VBAT', notes: 'Protected VBat input' },
+          { pinNumber: 2, pinName: 'GND', category: 'ground', nominalVoltage: 0.0, connectedNetId: 'NET_CHASSIS_GND', notes: 'Ground tab' },
+          { pinNumber: 3, pinName: 'VOUT', category: 'power', nominalVoltage: 5.0, connectedNetId: 'NET_5V_REGULATED', notes: '+5V output rail' },
+        ],
+      },
+      RESISTOR: {
+        marking: '100R',
+        decodedValue: '100 Ω ±1% AEC-Q200',
+        packageType: '0805 SMD',
+        circuitFunction: 'Series Damping / Termination Resistor',
+        vRange: '0.25W / 150V Max',
+        pins: [
+          { pinNumber: 1, pinName: 'TERM 1', category: 'signal_in', nominalVoltage: 5.0, connectedNetId: defaultNet, notes: 'Resistor terminal 1' },
+          { pinNumber: 2, pinName: 'TERM 2', category: 'ground', nominalVoltage: 0.0, connectedNetId: 'NET_CHASSIS_GND', notes: 'Resistor terminal 2' },
+        ],
+      },
+      CAPACITOR: {
+        marking: '100nF 50V',
+        decodedValue: '100 nF / 50V X7R MLCC',
+        packageType: '0805 SMD',
+        circuitFunction: 'Bypass & Decoupling Capacitor',
+        vRange: '50V DC X7R',
+        pins: [
+          { pinNumber: 1, pinName: 'POS (+)', category: 'power', nominalVoltage: 5.0, connectedNetId: defaultNet, notes: 'Positive decoupling rail' },
+          { pinNumber: 2, pinName: 'GND (-)', category: 'ground', nominalVoltage: 0.0, connectedNetId: 'NET_CHASSIS_GND', notes: 'Ground plane return' },
+        ],
+      },
+      DIODE: {
+        marking: 'B540C',
+        decodedValue: '40V / 5A Schottky Barrier Diode',
+        packageType: 'SMC (DO-214AB)',
+        circuitFunction: 'Reverse Polarity / Flyback Protection Diode',
+        vRange: '40V VRRM',
+        pins: [
+          { pinNumber: 1, pinName: 'ANODE (A)', category: 'power', nominalVoltage: 12.6, connectedNetId: defaultNet, notes: 'Anode terminal' },
+          { pinNumber: 2, pinName: 'CATHODE (K)', category: 'power', nominalVoltage: 12.25, connectedNetId: 'NET_KL30_VBAT', notes: 'Cathode terminal' },
+        ],
+      },
+    };
+
+    const chosen = specPresets[template];
     const newComp: DetailedPcbComponent = {
       refDes,
-      category: 'TEST_POINT',
-      marking: `TP${nextIndex}`,
-      decodedValue: 'Technician Probe Pad',
-      packageType: 'SMD Test Pad (1.5mm)',
-      bbox: { ymin: 220, xmin: 420, ymax: 300, xmax: 510 },
+      category: template,
+      marking: chosen.marking,
+      decodedValue: chosen.decodedValue,
+      packageType: chosen.packageType,
+      bbox: { ymin: 220, xmin: 420, ymax: 320, xmax: 530 },
       confidenceScore: 1.0,
       verificationStatus: 'VERIFIED',
-      circuitFunction: 'Manual Technician Oscilloscope / Multimeter Test Point',
-      terminalIds: [`TP${nextIndex}-1`],
+      circuitFunction: chosen.circuitFunction,
+      terminalIds: chosen.pins.map((p) => `${refDes}-${p.pinNumber}`),
       notes: 'Added manually during bench PCB inspection.',
-      operatingVoltageRange: '0V – 42V DC',
+      operatingVoltageRange: chosen.vRange,
       source: 'MANUAL',
-      pinSpecs: [
-        {
-          pinNumber: 1,
-          pinName: 'PAD',
-          category: 'signal_in',
-          nominalVoltage: 5.0,
-          connectedNetId: activeNetId || 'NET_5V_REGULATED',
-          notes: 'Direct probe test point pad',
-        },
-      ],
+      pinSpecs: chosen.pins,
     };
     setComponents((prev) => [...prev, newComp]);
     setSelectedCompRef(refDes);
     setSelectedPinNumber(1);
     setInspectorSubTab('PART');
-    setStatusMessage(`Added ${refDes} — drag box on PCB canvas to position over physical pad.`);
+    setShowAddPartMenu(false);
+    setStatusMessage(`Added ${refDes} (${chosen.marking}) — drag box on PCB canvas to position over component.`);
   };
+
+  const handleAddManualComponent = () => handleAddCustomComponent('TEST_POINT');
 
   const handleAddPinToComponent = (refDes: string) => {
     setComponents((prev) =>
@@ -1994,6 +2237,63 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
     setStatusMessage(`Added trace waypoint to [${effectiveNetId}] — drag white vertices on canvas.`);
   };
 
+  const handleDeleteLastVertexFromActiveNet = () => {
+    if (!effectiveNetId) return;
+    setNets((prev) =>
+      prev.map((n) => {
+        if (n.name !== effectiveNetId) return n;
+        if (n.traceBranches && n.traceBranches.length > 0) {
+          const lastIdx = n.traceBranches.length - 1;
+          const nextBranches = n.traceBranches.map((b, idx) =>
+            idx === lastIdx && b.length > 2 ? b.slice(0, -1) : b
+          );
+          return { ...n, traceBranches: nextBranches, tracePoints: nextBranches.flat() };
+        }
+        if (n.tracePoints.length > 2) {
+          return { ...n, tracePoints: n.tracePoints.slice(0, -1) };
+        }
+        return n;
+      })
+    );
+    setStatusMessage(`Removed trailing vertex from [${effectiveNetId}].`);
+  };
+
+  const handleAddManualHotspot = (severity: 'CRITICAL' | 'WARNING' | 'INFO' = 'WARNING') => {
+    const targetComp = components.find((c) => c.refDes === selectedCompRef);
+    const bbox = targetComp
+      ? clampBbox({
+          ymin: targetComp.bbox.ymin - 15,
+          xmin: targetComp.bbox.xmin - 15,
+          ymax: targetComp.bbox.ymax + 15,
+          xmax: targetComp.bbox.xmax + 15,
+        })
+      : { ymin: 420, xmin: 420, ymax: 560, xmax: 560 };
+
+    const newHotspot: ImageAnalysisHotspot = {
+      id: `manual-hotspot-${Date.now()}`,
+      label: targetComp
+        ? `${targetComp.refDes} Physical Inspection Flag`
+        : 'Manual Solder / Thermal Inspection Zone',
+      severity,
+      bbox,
+      suspectComponentRef: targetComp?.refDes,
+      notes: targetComp
+        ? `Technician flagged ${targetComp.refDes} (${targetComp.marking}) for solder crack, heat discoloration, or pad continuity check.`
+        : 'Technician flagged region for microscopic solder joint and trace continuity inspection.',
+      source: 'LOCAL_CV',
+    };
+    setHotspots((prev) => [newHotspot, ...prev]);
+    setSelectedHotspotId(newHotspot.id);
+    setShowHotspots(true);
+    setInspectorSubTab('AUDIT');
+    setStatusMessage(`Flagged new ${severity} inspection hotspot${targetComp ? ` on ${targetComp.refDes}` : ''}.`);
+  };
+
+  const handleDeleteHotspot = (id: string) => {
+    setHotspots((prev) => prev.filter((h) => h.id !== id));
+    if (selectedHotspotId === id) setSelectedHotspotId(null);
+  };
+
   const verifyComponent = (refDes: string) => {
     setComponents((prev) =>
       prev.map((c) =>
@@ -2137,53 +2437,6 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
     return '#f59e0b';
   };
 
-  /**
-   * Computes physical pin marker coordinates along component package edges
-   * so users can see exact pin locations on the PCB canvas.
-   */
-  const computeComponentPinCoords = (
-    comp: DetailedPcbComponent,
-    pinIndex: number,
-    totalPins: number
-  ): TracePoint => {
-    const { xmin, ymin, xmax, ymax } = comp.bbox;
-    const pkg = (comp.packageType || '').toUpperCase();
-
-    if (pkg.includes('SOIC') || totalPins === 8) {
-      // Dual-row SOIC-8: Pins 1..4 on left edge (top-to-bottom), Pins 5..8 on right edge (bottom-to-top)
-      const half = Math.ceil(totalPins / 2);
-      if (pinIndex < half) {
-        const ratio = (pinIndex + 0.5) / half;
-        return { x: xmin, y: Math.round(ymin + (ymax - ymin) * ratio) };
-      } else {
-        const rightIdx = totalPins - 1 - pinIndex;
-        const ratio = (rightIdx + 0.5) / (totalPins - half);
-        return { x: xmax, y: Math.round(ymin + (ymax - ymin) * ratio) };
-      }
-    }
-
-    if (pkg.includes('TO-263') || totalPins === 5) {
-      // TO-263-5: Pins distributed along left edge, except Pin 3 (Tab) anchored to bottom/right ground plane
-      const ratio = (pinIndex + 0.5) / totalPins;
-      return { x: xmin, y: Math.round(ymin + (ymax - ymin) * ratio) };
-    }
-
-    // Standard 2-terminal SMD passive / diode: Pin 1 left/top, Pin 2 right/bottom
-    const w = xmax - xmin;
-    const h = ymax - ymin;
-    if (w >= h) {
-      return {
-        x: pinIndex === 0 ? xmin : xmax,
-        y: Math.round((ymin + ymax) / 2),
-      };
-    } else {
-      return {
-        x: Math.round((xmin + xmax) / 2),
-        y: pinIndex === 0 ? ymin : ymax,
-      };
-    }
-  };
-
   const openDatasheetCardForNode = useCallback(
     (
       compRefDes: string,
@@ -2231,170 +2484,17 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
     []
   );
 
-  // Computes continuous orthogonal trace path between two clicked components when hovering any node
-  const highlightedContinuousPath = useMemo(() => {
-    const [refA, refB] = tracePathPair;
-    if (!refA || !refB || !hoveredNodeTooltip) return null;
-
-    const compA = components.find((c) => c.refDes === refA);
-    const compB = components.find((c) => c.refDes === refB);
-    if (!compA || !compB) return null;
-
-    const hoverPt: TracePoint = {
-      x: Math.round(hoveredNodeTooltip.xNorm),
-      y: Math.round(hoveredNodeTooltip.yNorm),
-    };
-
-    const getComponentPinOrCenter = (
-      comp: DetailedPcbComponent,
-      preferredNetId?: string | null
-    ): TracePoint => {
-      const pins = comp.pinSpecs || [];
-      if (preferredNetId && pins.length > 0) {
-        const idx = pins.findIndex((p) => p.connectedNetId === preferredNetId);
-        if (idx >= 0) {
-          return computeComponentPinCoords(comp, idx, pins.length);
-        }
-      }
-      return getBoxCenter(comp.bbox);
-    };
-
-    const buildOrthogonalSegment = (from: TracePoint, to: TracePoint): TracePoint[] => {
-      const dx = Math.abs(to.x - from.x);
-      const dy = Math.abs(to.y - from.y);
-      if (dx <= 2 || dy <= 2) {
-        return [from, to];
-      }
-      if (dx >= dy) {
-        const midX = Math.round((from.x + to.x) / 2);
-        return [from, { x: midX, y: from.y }, { x: midX, y: to.y }, to];
-      }
-      const midY = Math.round((from.y + to.y) / 2);
-      return [from, { x: from.x, y: midY }, { x: to.x, y: midY }, to];
-    };
-
-    // Build netlist adjacency graph (component <-> component via net)
-    type NetEdge = { toRef: string; netName: string };
-    const adjacency = new Map<string, NetEdge[]>();
-    const validRefs = new Set(components.map((c) => c.refDes));
-
-    for (const net of nets) {
-      const members = new Set<string>();
-      for (const r of net.connectedComponentRefs || []) {
-        if (validRefs.has(r)) members.add(r);
-      }
-      for (const c of components) {
-        if (c.pinSpecs?.some((p) => p.connectedNetId === net.name)) {
-          members.add(c.refDes);
-        }
-      }
-      const memberList = Array.from(members);
-      for (let i = 0; i < memberList.length; i++) {
-        for (let j = 0; j < memberList.length; j++) {
-          if (i === j) continue;
-          const u = memberList[i];
-          const v = memberList[j];
-          if (!adjacency.has(u)) adjacency.set(u, []);
-          adjacency.get(u)!.push({ toRef: v, netName: net.name });
-        }
-      }
-    }
-
-    // Prioritize edges matching the currently hovered node's net
-    for (const [, edges] of adjacency) {
-      edges.sort((e1, e2) => {
-        const m1 = e1.netName === hoveredNodeTooltip.netId ? 0 : 1;
-        const m2 = e2.netName === hoveredNodeTooltip.netId ? 0 : 1;
-        return m1 - m2;
-      });
-    }
-
-    // BFS shortest path from compA to compB
-    type BfsStep = { refDes: string; viaNet: string | null };
-    const queue: BfsStep[][] = [[{ refDes: compA.refDes, viaNet: null }]];
-    const visited = new Set<string>([compA.refDes]);
-    let foundChain: BfsStep[] | null = null;
-
-    while (queue.length > 0) {
-      const path = queue.shift()!;
-      const tail = path[path.length - 1];
-      if (tail.refDes === compB.refDes) {
-        foundChain = path;
-        break;
-      }
-      for (const edge of adjacency.get(tail.refDes) || []) {
-        if (!visited.has(edge.toRef)) {
-          visited.add(edge.toRef);
-          queue.push([...path, { refDes: edge.toRef, viaNet: edge.netName }]);
-        }
-      }
-    }
-
-    const traversedNets = foundChain
-      ? Array.from(new Set(foundChain.map((s) => s.viaNet).filter((n): n is string => Boolean(n))))
-      : [];
-    const isHoveredNetOnChain = Boolean(
-      hoveredNodeTooltip.netId && traversedNets.includes(hoveredNodeTooltip.netId)
-    );
-
-    const anchorA = getComponentPinOrCenter(
-      compA,
-      foundChain?.[1]?.viaNet || hoveredNodeTooltip.netId
-    );
-    const anchorB = getComponentPinOrCenter(
-      compB,
-      foundChain?.[foundChain.length - 1]?.viaNet || hoveredNodeTooltip.netId
-    );
-
-    const rawPoints: TracePoint[] = [];
-    const appendSegment = (seg: TracePoint[]) => {
-      for (const pt of seg) {
-        const last = rawPoints[rawPoints.length - 1];
-        if (!last || Math.abs(last.x - pt.x) > 1 || Math.abs(last.y - pt.y) > 1) {
-          rawPoints.push(pt);
-        }
-      }
-    };
-
-    if (foundChain && foundChain.length >= 2 && isHoveredNetOnChain) {
-      // Trace through verified netlist hops and route through the hovered node on its matching net hop
-      let hoverInserted = false;
-      for (let i = 0; i < foundChain.length - 1; i++) {
-        const curComp = components.find((c) => c.refDes === foundChain[i].refDes)!;
-        const nxtComp = components.find((c) => c.refDes === foundChain[i + 1].refDes)!;
-        const hopNet = foundChain[i + 1].viaNet;
-        const pStart = i === 0 ? anchorA : getComponentPinOrCenter(curComp, hopNet);
-        const pEnd =
-          i + 1 === foundChain.length - 1 ? anchorB : getComponentPinOrCenter(nxtComp, hopNet);
-
-        if (!hoverInserted && hopNet === hoveredNodeTooltip.netId) {
-          appendSegment(buildOrthogonalSegment(pStart, hoverPt));
-          appendSegment(buildOrthogonalSegment(hoverPt, pEnd));
-          hoverInserted = true;
-        } else {
-          appendSegment(buildOrthogonalSegment(pStart, pEnd));
-        }
-      }
-    } else {
-      // Continuous orthogonal trace linking Component A -> Hovered Node -> Component B
-      appendSegment(buildOrthogonalSegment(anchorA, hoverPt));
-      appendSegment(buildOrthogonalSegment(hoverPt, anchorB));
-    }
-
-    return {
-      compA: compA.refDes,
-      compB: compB.refDes,
-      anchorA,
-      anchorB,
-      hoverPt,
-      points: rawPoints,
-      pointsStr: rawPoints.map((p) => `${p.x},${p.y}`).join(' '),
-      traversedNets,
-      isNetVerified: Boolean(foundChain && isHoveredNetOnChain),
-      hoveredNodeLabel: hoveredNodeTooltip.nodeLabel,
-      hoveredNetId: hoveredNodeTooltip.netId,
-    };
-  }, [tracePathPair, hoveredNodeTooltip, components, nets]);
+  // Computes continuous orthogonal trace path between two clicked components via PcbDiagnosticEngine
+  const highlightedContinuousPath = useMemo(
+    () =>
+      computeContinuousTracePath({
+        tracePathPair,
+        hoveredNode: hoveredNodeTooltip,
+        components,
+        nets,
+      }),
+    [tracePathPair, hoveredNodeTooltip, components, nets]
+  );
 
   // Aspect-locked board dimensions so 0..1000 coordinates match photo pixels 1:1
   const boardWidthPx = Math.round(740 * zoomLevel);
@@ -2415,56 +2515,127 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
             className="h-7 w-auto object-contain rounded border border-cyan-500/40 shadow-sm shrink-0"
           />
           <div className="flex flex-col min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-sm font-hud font-bold text-slate-100 tracking-wider uppercase whitespace-nowrap">
                 PCB Vision & Auto Track Mapper
               </span>
-              <span className="hidden lg:inline-flex items-center gap-1 px-1.5 py-0.5 text-[9.5px] rounded bg-cyan-950/90 border border-cyan-500/40 text-cyan-300 font-semibold">
+              <span className="hidden lg:inline-flex items-center gap-1 px-1.5 py-0.5 text-[9.5px] rounded bg-cyan-950/90 border border-cyan-500/40 text-cyan-300 font-semibold tabular-nums">
                 <Zap className="w-2.5 h-2.5 text-cyan-400" />
                 {powerSupply?.isOutputEnabled !== false
                   ? `BENCH ${(powerSupply?.voltageSetting ?? 12.6).toFixed(1)}V`
                   : 'BENCH OFF (0.0V)'}
               </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowThermalHeatmap(true);
+                  setInspectorSubTab('THERMAL');
+                }}
+                className={`hidden xl:inline-flex items-center gap-1 px-1.5 py-0.5 text-[9.5px] rounded border font-semibold tabular-nums transition ${
+                  peakBoardTempC >= 110
+                    ? 'bg-rose-950/90 border-rose-500/70 text-rose-200 animate-pulse'
+                    : peakBoardTempC >= 80
+                    ? 'bg-amber-950/90 border-amber-500/60 text-amber-200'
+                    : 'bg-slate-900 border-slate-700 text-sky-300 hover:border-sky-500/60'
+                }`}
+                title="Peak Component Junction Temperature (Click to open IR Thermal Telemetry)"
+              >
+                <Thermometer className="w-2.5 h-2.5" />
+                PEAK {peakBoardTempC.toFixed(0)}°C
+              </button>
+              <button
+                type="button"
+                onClick={() => setInspectorSubTab('AUDIT')}
+                className={`hidden xl:inline-flex items-center gap-1 px-1.5 py-0.5 text-[9.5px] rounded border font-semibold tabular-nums transition ${
+                  criticalAuditCount > 0
+                    ? 'bg-rose-950/90 border-rose-500/70 text-rose-200'
+                    : boardAuditFindings.length > 0
+                    ? 'bg-amber-950/80 border-amber-500/50 text-amber-200'
+                    : 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300'
+                }`}
+                title="Automated MNA, Thermal & ERC Audit Findings"
+              >
+                <ShieldAlert className="w-2.5 h-2.5" />
+                {criticalAuditCount > 0
+                  ? `${criticalAuditCount} CRIT AUDIT`
+                  : boardAuditFindings.length > 0
+                  ? `${boardAuditFindings.length} AUDIT`
+                  : 'ERC NOMINAL'}
+              </button>
             </div>
-            <span className="text-[10.5px] text-cyan-300/90 truncate max-w-[440px] font-sans">
+            <span className="text-[10.5px] text-cyan-300/90 truncate max-w-[460px] font-sans">
               {isAnalyzing ? 'Analyzing PCB geometry & markings...' : statusMessage}
             </span>
           </div>
         </div>
 
         <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none w-full lg:w-auto lg:flex-wrap pb-0.5 lg:pb-0">
-          {/* Sample Presets */}
+          {/* Reference Stage Presets */}
           <div className="flex items-center gap-1 bg-slate-950/80 p-1 rounded-lg border border-slate-800 shrink-0">
             <span className="text-[9.5px] text-slate-400 px-1 font-bold">PRESETS:</span>
             {SAMPLE_BOARDS.map((sb) => (
               <button
                 key={sb.id}
+                type="button"
                 onClick={() => loadSample(sb)}
                 className={`px-2 py-0.5 text-[10px] rounded border transition whitespace-nowrap ${
-                  selectedBoard.id === sb.id && !uploadedImageUrl
+                  selectedBoard.id === sb.id && (!uploadedImageUrl || uploadedImageUrl === sb.imageSrc)
                     ? 'bg-cyan-950 border-cyan-400 text-cyan-200 font-bold shadow-sm'
                     : 'bg-slate-900 border-slate-700/80 text-slate-400 hover:text-white'
                 }`}
                 title={sb.summary}
               >
-                {sb.id === 'sample-power-stage' ? '5V LDO Stage' : 'CAN Transceiver'}
+                {sb.id === 'sample-power-stage'
+                  ? '5V LDO Stage'
+                  : sb.id === 'sample-can-stage'
+                  ? 'CAN Transceiver'
+                  : 'Injector MOSFET'}
               </button>
             ))}
           </div>
 
-          {/* Add Manual Part */}
+          {/* OEM ECU Photography Presets */}
+          {OEM_PCB_BOARDS.length > 0 && (
+            <select
+              aria-label="Load OEM ECU PCB Profile"
+              value={OEM_PCB_BOARDS.some((b) => b.id === selectedBoard.id) ? selectedBoard.id : ''}
+              onChange={(e) => {
+                const chosen = OEM_PCB_BOARDS.find((b) => b.id === e.target.value);
+                if (chosen) loadSample(chosen);
+              }}
+              className="px-2 py-1 text-[10.5px] bg-slate-900 text-cyan-200 border border-slate-700 hover:border-cyan-500/60 rounded-lg focus:outline-none focus:border-cyan-400 cursor-pointer shrink-0"
+              title="Load Real OEM ECU PCB Photography with MNA-Linked Stages"
+            >
+              <option value="" disabled>
+                OEM ECU PCBs ({OEM_PCB_BOARDS.length})
+              </option>
+              {OEM_PCB_BOARDS.map((oem) => (
+                <option key={oem.id} value={oem.id}>
+                  {oem.name}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {/* Add Custom Part Palette Toggle */}
           <button
-            onClick={handleAddManualComponent}
-            className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg transition whitespace-nowrap shrink-0"
-            title="Add Manual Test Pad / Component"
+            type="button"
+            onClick={() => setShowAddPartMenu((prev) => !prev)}
+            className={`flex items-center gap-1 px-2 py-1 border rounded-lg transition whitespace-nowrap shrink-0 ${
+              showAddPartMenu
+                ? 'bg-cyan-950 border-cyan-400 text-cyan-200 font-semibold'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+            }`}
+            title="Insert Test Pad, MOSFET Driver, LDO, Resistor, Capacitor, or Diode onto Board"
           >
             <Plus className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Add Pad</span>
+            <span>Add Part</span>
           </button>
 
           {/* Local CV Re-Scan (when image uploaded) */}
           {uploadedImageUrl && (
             <button
+              type="button"
               onClick={handleRerunLocalCv}
               disabled={isAnalyzing}
               className="flex items-center gap-1 px-2 py-1 bg-amber-950/70 hover:bg-amber-900/80 text-amber-200 border border-amber-600/60 rounded-lg transition disabled:opacity-50 whitespace-nowrap shrink-0"
@@ -2477,6 +2648,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
 
           {/* Save Cloud Map */}
           <button
+            type="button"
             onClick={handleSavePcbToCloud}
             disabled={isSavingScan}
             className="flex items-center gap-1 px-2 py-1 bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-200 border border-emerald-600/60 rounded-lg transition disabled:opacity-50 whitespace-nowrap shrink-0"
@@ -2488,6 +2660,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
 
           {/* Saved Maps Dropdown Toggle */}
           <button
+            type="button"
             onClick={() => setShowSavedScansPanel((prev) => !prev)}
             className={`flex items-center gap-1 px-2 py-1 rounded-lg border transition whitespace-nowrap shrink-0 ${
               showSavedScansPanel
@@ -2509,6 +2682,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
 
           {/* Export JSON */}
           <button
+            type="button"
             onClick={exportProjectJson}
             className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg transition whitespace-nowrap shrink-0"
             title="Export JSON Datasheet & Thermal Backup"
@@ -2518,6 +2692,41 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Quick-Insert Component Palette Bar (Non-clipped across desktop & mobile) */}
+      {showAddPartMenu && (
+        <div className="bg-slate-950 border-b border-cyan-500/25 px-3 py-2 flex flex-wrap items-center gap-1.5 text-[10.5px]">
+          <span className="text-cyan-300 font-bold uppercase mr-1 flex items-center gap-1">
+            <Plus className="w-3 h-3" /> Insert Component:
+          </span>
+          {(
+            [
+              { id: 'TEST_POINT', label: 'Test Pad' },
+              { id: 'MOSFET_DRIVER', label: 'MOSFET (BTS141)' },
+              { id: 'VOLTAGE_REGULATOR', label: 'LDO (TLE4275G)' },
+              { id: 'RESISTOR', label: 'Resistor (100R)' },
+              { id: 'CAPACITOR', label: 'Capacitor (100nF)' },
+              { id: 'DIODE', label: 'Schottky (B540C)' },
+            ] as const
+          ).map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => handleAddCustomComponent(item.id)}
+              className="px-2 py-1 rounded bg-slate-900 hover:bg-cyan-950 border border-slate-700 hover:border-cyan-400 text-slate-200 hover:text-cyan-200 font-semibold transition"
+            >
+              + {item.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setShowAddPartMenu(false)}
+            className="ml-auto px-2 py-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 flex items-center gap-1"
+          >
+            <X className="w-3 h-3" /> Close
+          </button>
+        </div>
+      )}
 
       {/* Collapsible Saved Cloud PCB Maps Bar */}
       {showSavedScansPanel && (
@@ -2603,7 +2812,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
           }`}
         >
           {/* HUD Layer & Tool Controls + Trace Path Status Stack */}
-          <div className="absolute top-2 left-2 right-28 sm:right-36 z-40 flex flex-col items-start gap-1.5 pointer-events-none">
+          <div className="absolute top-2 left-2 right-44 sm:right-48 z-40 flex flex-col items-start gap-1.5 pointer-events-none">
             <div className="pointer-events-auto flex flex-nowrap md:flex-wrap items-center gap-1 hud-panel p-1 rounded-lg text-[10.5px] sm:text-[11px] text-slate-300 shadow-lg border border-slate-800/90 max-w-full overflow-x-auto scrollbar-none [&>button]:whitespace-nowrap [&>button]:shrink-0">
             <button
               onClick={() => setInteractionMode('EDIT')}
@@ -2617,6 +2826,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
             </button>
 
             <button
+              type="button"
               onClick={() => setInteractionMode('PAN')}
               className={`px-2 py-0.5 rounded flex items-center gap-1 transition ${
                 interactionMode === 'PAN' ? 'bg-cyan-600 text-white font-bold' : 'text-slate-400 hover:text-white'
@@ -2628,6 +2838,34 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
             </button>
 
             <button
+              type="button"
+              onClick={() => {
+                setInteractionMode((m) => {
+                  const next = m === 'PROBE' ? 'EDIT' : 'PROBE';
+                  if (next === 'PROBE') {
+                    setInspectorSubTab('PROBE');
+                    setStatusMessage(
+                      'DUAL PROBE MODE: Click any pin pad, component, or trace node to place Red Probe A & Black Probe B.'
+                    );
+                  }
+                  return next;
+                });
+              }}
+              className={`px-2 py-0.5 rounded flex items-center gap-1 transition ${
+                interactionMode === 'PROBE'
+                  ? 'bg-sky-600 text-white font-bold shadow-[0_0_12px_rgba(56,189,248,0.55)]'
+                  : probeA || probeB
+                  ? 'bg-sky-950 text-sky-300 border border-sky-500/60 font-bold'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="Place Dual Probes (A/B) for Live MNA Differential Voltage, Continuity & Diode Drop Testing"
+            >
+              <Crosshair className="w-3 h-3" />
+              <span>Probe A/B</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setInteractionMode((m) => (m === 'TRACE_EDIT' ? 'EDIT' : 'TRACE_EDIT'))}
               className={`px-2 py-0.5 rounded flex items-center gap-1 transition ${
                 interactionMode === 'TRACE_EDIT'
@@ -2641,6 +2879,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
             </button>
 
             <button
+              type="button"
               onClick={() => {
                 setInteractionMode((m) => {
                   const next = m === 'TRACE_PATH' ? 'EDIT' : 'TRACE_PATH';
@@ -2668,6 +2907,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
             </button>
 
             <button
+              type="button"
               onClick={() => {
                 if (!uploadedImageUrl) {
                   setStatusMessage('Upload a PCB photo first to use zoomed Macro Crop re-scan.');
@@ -2690,6 +2930,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
             <span className="text-slate-700 px-0.5">|</span>
 
             <button
+              type="button"
               onClick={() => setShowComponents(!showComponents)}
               className={`px-2 py-0.5 rounded flex items-center gap-1 transition ${
                 showComponents ? 'bg-slate-800 text-cyan-300 font-bold' : 'text-slate-500'
@@ -2699,6 +2940,18 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
               <span>Parts</span>
             </button>
             <button
+              type="button"
+              onClick={() => setShowPhotoTexture((prev) => !prev)}
+              className={`px-2 py-0.5 rounded flex items-center gap-1 transition ${
+                showPhotoTexture ? 'bg-slate-800 text-emerald-300 font-bold' : 'text-slate-500'
+              }`}
+              title="Toggle High-Detail Top-Down PCB Macro Texture vs CAD Vector Grid"
+            >
+              <Layers className="w-3 h-3" />
+              <span>{showPhotoTexture ? 'Photo BG' : 'CAD Grid'}</span>
+            </button>
+            <button
+              type="button"
               onClick={() => setShowNets(!showNets)}
               className={`px-2 py-0.5 rounded flex items-center gap-1 transition ${
                 showNets ? 'bg-slate-800 text-cyan-300 font-bold' : 'text-slate-500'
@@ -2708,6 +2961,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
               <span>Traces</span>
             </button>
             <button
+              type="button"
               onClick={() => setShowHotspots(!showHotspots)}
               className={`px-2 py-0.5 rounded flex items-center gap-1 transition ${
                 showHotspots ? 'bg-slate-800 text-rose-300 font-bold' : 'text-slate-500'
@@ -2717,6 +2971,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
               <span>Hotspots ({hotspots.length})</span>
             </button>
             <button
+              type="button"
               onClick={() => setShowPinMarkers(!showPinMarkers)}
               className={`px-2 py-0.5 rounded flex items-center gap-1 transition ${
                 showPinMarkers ? 'bg-slate-800 text-amber-300 font-bold' : 'text-slate-500'
@@ -2727,6 +2982,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
               <span>Pins</span>
             </button>
             <button
+              type="button"
               onClick={() => setShowVoltageLabels(!showVoltageLabels)}
               className={`px-2 py-0.5 rounded flex items-center gap-1 transition ${
                 showVoltageLabels
@@ -2739,6 +2995,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
               <span>MNA V-Labels</span>
             </button>
             <button
+              type="button"
               onClick={() => setShowThermalHeatmap(!showThermalHeatmap)}
               className={`px-2 py-0.5 rounded flex items-center gap-1 transition ${
                 showThermalHeatmap
@@ -2751,6 +3008,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
               <span>IR Thermal</span>
             </button>
             <button
+              type="button"
               onClick={() => {
                 setShowDatasheetInfo((prev) => {
                   const next = !prev;
@@ -2774,7 +3032,87 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
               <FileText className="w-3 h-3 text-sky-400" />
               <span>Show Datasheet Info</span>
             </button>
+
+            <span className="text-slate-700 px-0.5">|</span>
+
+            {/* Optical Inspection Filter Selector */}
+            <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Optical PCB Inspection Filter">
+              {(
+                [
+                  { id: 'NORMAL', label: 'Norm' },
+                  { id: 'CONTRAST', label: 'Contrast' },
+                  { id: 'UV_SILK', label: 'UV Silk' },
+                  { id: 'XRAY', label: 'X-Ray' },
+                ] as const
+              ).map((flt) => (
+                <button
+                  key={flt.id}
+                  type="button"
+                  onClick={() => setOpticalFilter(flt.id)}
+                  className={`px-1.5 py-0.5 rounded text-[9.5px] transition ${
+                    opticalFilter === flt.id
+                      ? 'bg-cyan-900 text-cyan-200 border border-cyan-400/60 font-bold'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                  title={`Optical Filter: ${flt.label}`}
+                >
+                  {flt.label}
+                </button>
+              ))}
             </div>
+            </div>
+
+            {/* Active Dual-Probe Live Measurement Status Bar */}
+            {(interactionMode === 'PROBE' || probeA || probeB) && (
+              <div className="pointer-events-auto bg-slate-950/95 backdrop-blur-md border border-sky-500/60 rounded-lg px-2.5 py-1.5 text-[10.5px] font-mono text-slate-200 shadow-xl flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1 text-sky-300 font-bold">
+                  <Crosshair className="w-3.5 h-3.5 text-sky-400" />
+                  <span>DUAL PROBE:</span>
+                </div>
+                <span
+                  className={`px-1.5 py-0.5 rounded border text-[10px] font-bold ${
+                    probeA
+                      ? 'bg-rose-950/90 border-rose-400 text-rose-200'
+                      : 'bg-slate-900 border-slate-700 text-slate-500'
+                  }`}
+                >
+                  A(+): {probeA ? probeA.label : 'Click node 1'}
+                </span>
+                <span className="text-sky-400 font-bold">↔</span>
+                <span
+                  className={`px-1.5 py-0.5 rounded border text-[10px] font-bold ${
+                    probeB
+                      ? 'bg-sky-950/90 border-sky-400 text-sky-200'
+                      : 'bg-slate-900 border-slate-700 text-slate-500'
+                  }`}
+                >
+                  B(−): {probeB ? probeB.label : 'Click node 2'}
+                </span>
+                {dualProbeMeasurement && (
+                  <span className="px-2 py-0.5 rounded bg-slate-900 border border-amber-500/50 text-amber-300 font-bold tabular-nums">
+                    ΔV {dualProbeMeasurement.differentialVoltage >= 0 ? '+' : ''}
+                    {dualProbeMeasurement.differentialVoltage.toFixed(3)}V ·{' '}
+                    {dualProbeMeasurement.continuityLabel}
+                  </span>
+                )}
+                {(probeA || probeB) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProbeA(null);
+                      setProbeB(null);
+                      setNextProbeSlot('A');
+                      setStatusMessage('Cleared Dual Probes A & B.');
+                    }}
+                    className="ml-1 px-1.5 py-0.5 rounded bg-slate-900 hover:bg-rose-950 border border-slate-700 hover:border-rose-500/60 text-slate-300 hover:text-rose-200 flex items-center gap-0.5 text-[9.5px] transition"
+                    title="Clear Probe A and Probe B"
+                  >
+                    <X className="w-2.5 h-2.5" />
+                    <span>Clear</span>
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* Trace Path Two-Component Pair Status Bar */}
             {(interactionMode === 'TRACE_PATH' || tracePathPair[0] !== null) && (
@@ -2815,6 +3153,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
                 </span>
                 {(tracePathPair[0] || tracePathPair[1]) && (
                   <button
+                    type="button"
                     onClick={() => {
                       setTracePathPair([null, null]);
                       setStatusMessage('Cleared Trace Path component pair.');
@@ -2833,6 +3172,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
           {/* Zoom controls */}
           <div className="absolute top-2.5 right-2.5 z-40 flex items-center gap-1 hud-panel p-1 rounded-lg border border-slate-800/90 shadow-lg">
             <button
+              type="button"
               onClick={() => setZoomLevel((prev) => Math.max(0.55, +(prev - 0.15).toFixed(2)))}
               className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white"
               title="Zoom Out"
@@ -2843,6 +3183,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
               {Math.round(zoomLevel * 100)}%
             </span>
             <button
+              type="button"
               onClick={() => setZoomLevel((prev) => Math.min(2.4, +(prev + 0.15).toFixed(2)))}
               className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white"
               title="Zoom In"
@@ -2850,6 +3191,15 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
               <ZoomIn className="w-3.5 h-3.5" />
             </button>
             <button
+              type="button"
+              onClick={handleFitBoardToViewport}
+              className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-cyan-300"
+              title="Fit PCB to Viewport"
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
               onClick={() => setZoomLevel(1.0)}
               className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white"
               title="Reset 100% Zoom"
@@ -2893,7 +3243,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
                 setZoomLevel((prev) => Math.min(2.4, Math.max(0.55, +(prev + delta).toFixed(2))));
               }
             }}
-            className="flex-1 overflow-auto p-6 pt-14 flex items-center justify-center"
+            className="flex-1 overflow-auto px-6 pt-28 pb-12 flex items-start justify-center"
           >
             <div
               ref={boardRef}
@@ -2932,28 +3282,60 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
                 }
               }}
               style={{ width: `${boardWidthPx}px`, height: `${boardHeightPx}px` }}
-              className={`relative shrink-0 bg-[#071512] border-4 border-[#16382f] rounded-xl shadow-2xl overflow-hidden select-none ${
-                interactionMode === 'MACRO_CROP'
+              className={`relative shrink-0 my-auto bg-[#071512] border-4 border-[#16382f] rounded-xl shadow-2xl overflow-hidden select-none ${
+                interactionMode === 'MACRO_CROP' || interactionMode === 'PROBE'
                   ? 'cursor-crosshair'
                   : interactionMode === 'PAN'
                   ? 'cursor-grab active:cursor-grabbing'
                   : ''
               }`}
             >
-              {/* Scan Photo (exact aspect match -> 1:1 coordinate fidelity) or High-Detail FR4 Board Vector */}
-              {uploadedImageUrl ? (
+              {/* Scan Photo / High-Detail PCB Macro Texture (1:1 coordinate fidelity) or High-Detail FR4 Board Vector */}
+              {uploadedImageUrl && showPhotoTexture ? (
                 <img
                   src={uploadedImageUrl}
                   alt="Uploaded PCB Scan Document"
+                  referrerPolicy="no-referrer"
                   decoding="async"
                   draggable={false}
-                  className="absolute inset-0 w-full h-full object-fill opacity-90 pointer-events-none"
+                  onLoad={(e) => {
+                    const el = e.currentTarget;
+                    if (el.naturalWidth > 0 && el.naturalHeight > 0) {
+                      const nextAspect = el.naturalWidth / el.naturalHeight;
+                      setBoardAspect(nextAspect);
+                      const vp = viewportScrollRef.current;
+                      if (vp) {
+                        const availW = Math.max(320, vp.clientWidth - 48);
+                        const availH = Math.max(240, vp.clientHeight - 160);
+                        const baseH = 740 / Math.max(0.5, Math.min(2.2, nextAspect));
+                        const fitZoom = Math.min(1.0, availW / 740, availH / baseH);
+                        setZoomLevel(Math.min(2.4, Math.max(0.55, Number(fitZoom.toFixed(2)))));
+                      }
+                    }
+                  }}
+                  className={`absolute inset-0 w-full h-full object-fill pointer-events-none transition-all duration-200 ${
+                    opticalFilter === 'CONTRAST'
+                      ? 'opacity-95 contrast-150 brightness-110 saturate-125'
+                      : opticalFilter === 'UV_SILK'
+                      ? 'opacity-95 invert hue-rotate-180 contrast-125 brightness-105'
+                      : opticalFilter === 'XRAY'
+                      ? 'opacity-25 grayscale contrast-150'
+                      : 'opacity-90'
+                  }`}
                 />
               ) : (
                 <svg
                   viewBox="0 0 1000 1000"
                   preserveAspectRatio="none"
-                  className="absolute inset-0 w-full h-full pointer-events-none"
+                  className={`absolute inset-0 w-full h-full pointer-events-none transition-opacity ${
+                    opticalFilter === 'XRAY'
+                      ? 'opacity-30 grayscale'
+                      : opticalFilter === 'UV_SILK'
+                      ? 'invert hue-rotate-180 contrast-125'
+                      : opticalFilter === 'CONTRAST'
+                      ? 'contrast-150 brightness-110'
+                      : 'opacity-100'
+                  }`}
                 >
                   <defs>
                     <pattern id="pcbGrid" width="40" height="40" patternUnits="userSpaceOnUse">
@@ -3188,6 +3570,16 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
                                   }}
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    if (interactionMode === 'PROBE') {
+                                      handlePlaceProbe({
+                                        label: `${net.name} Node #${pIdx + 1}`,
+                                        netId: net.name,
+                                        nominalVoltage: net.nominalVoltage ?? 5.0,
+                                        xNorm: p.x,
+                                        yNorm: p.y,
+                                      });
+                                      return;
+                                    }
                                     setActiveNetId(net.name);
                                     const primaryCompRef = net.connectedComponentRefs?.[0];
                                     if (primaryCompRef) {
@@ -3276,6 +3668,19 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
                             }}
                             onClick={(e) => {
                               e.stopPropagation();
+                              if (interactionMode === 'PROBE') {
+                                handlePlaceProbe({
+                                  label: `${comp.refDes} #${pin.pinNumber} (${pin.pinName})`,
+                                  compRefDes: comp.refDes,
+                                  pinNumber: pin.pinNumber,
+                                  pinName: pin.pinName,
+                                  netId: pin.connectedNetId,
+                                  nominalVoltage: pin.nominalVoltage,
+                                  xNorm: pt.x,
+                                  yNorm: pt.y,
+                                });
+                                return;
+                              }
                               if (interactionMode === 'TRACE_PATH' || e.shiftKey) {
                                 handleSelectTracePathComponent(comp.refDes);
                                 return;
@@ -3372,7 +3777,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedHotspotId(hotspot.id);
-                        setInspectorSubTab('HOTSPOTS');
+                        setInspectorSubTab('AUDIT');
                         if (hotspot.suspectComponentRef) {
                           setSelectedCompRef(hotspot.suspectComponentRef);
                         }
@@ -3442,6 +3847,26 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
                       }}
                       onPointerDown={(e) => {
                         if ((e.target as HTMLElement).dataset.noDrag === 'true') return;
+                        if (interactionMode === 'PROBE') {
+                          e.stopPropagation();
+                          const firstPin = comp.pinSpecs?.[0];
+                          const pt = firstPin
+                            ? computeComponentPinCoords(comp, 0, comp.pinSpecs?.length || 1)
+                            : getBoxCenter(comp.bbox);
+                          handlePlaceProbe({
+                            label: firstPin
+                              ? `${comp.refDes} #${firstPin.pinNumber} (${firstPin.pinName})`
+                              : comp.refDes,
+                            compRefDes: comp.refDes,
+                            pinNumber: firstPin?.pinNumber,
+                            pinName: firstPin?.pinName,
+                            netId: firstPin?.connectedNetId || 'NET_UNASSIGNED',
+                            nominalVoltage: firstPin?.nominalVoltage ?? 0,
+                            xNorm: pt.x,
+                            yNorm: pt.y,
+                          });
+                          return;
+                        }
                         if (interactionMode === 'TRACE_PATH' || (interactionMode === 'EDIT' && e.shiftKey)) {
                           e.stopPropagation();
                           setSelectedCompRef(comp.refDes);
@@ -3633,6 +4058,19 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
                                 }}
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  if (interactionMode === 'PROBE') {
+                                    handlePlaceProbe({
+                                      label: `${comp.refDes} #${pin.pinNumber} (${pin.pinName})`,
+                                      compRefDes: comp.refDes,
+                                      pinNumber: pin.pinNumber,
+                                      pinName: pin.pinName,
+                                      netId: pin.connectedNetId,
+                                      nominalVoltage: pin.nominalVoltage,
+                                      xNorm: pinCoords.x,
+                                      yNorm: pinCoords.y,
+                                    });
+                                    return;
+                                  }
                                   if (interactionMode === 'TRACE_PATH' || e.shiftKey) {
                                     handleSelectTracePathComponent(comp.refDes);
                                     return;
@@ -3857,6 +4295,83 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
                     r="5"
                     fill="#ffffff"
                   />
+                </svg>
+              )}
+
+              {/* Dual-Probe SVG Reticles & Differential Measurement Span */}
+              {(probeA || probeB) && (
+                <svg
+                  viewBox="0 0 1000 1000"
+                  preserveAspectRatio="none"
+                  className="absolute inset-0 w-full h-full z-40 pointer-events-none"
+                >
+                  {probeA && probeB && (
+                    <g>
+                      <line
+                        x1={probeA.xNorm}
+                        y1={probeA.yNorm}
+                        x2={probeB.xNorm}
+                        y2={probeB.yNorm}
+                        stroke="#38bdf8"
+                        strokeWidth="3.5"
+                        strokeDasharray="10,6"
+                      />
+                      {dualProbeMeasurement && (
+                        <g>
+                          <rect
+                            x={(probeA.xNorm + probeB.xNorm) / 2 - 78}
+                            y={(probeA.yNorm + probeB.yNorm) / 2 - 14}
+                            width="156"
+                            height="28"
+                            rx="6"
+                            fill="#020617"
+                            fillOpacity="0.94"
+                            stroke="#38bdf8"
+                            strokeWidth="2"
+                          />
+                          <text
+                            x={(probeA.xNorm + probeB.xNorm) / 2}
+                            y={(probeA.yNorm + probeB.yNorm) / 2 + 4}
+                            textAnchor="middle"
+                            fill="#fcd34d"
+                            fontSize="11.5"
+                            fontFamily="monospace"
+                            fontWeight="bold"
+                          >
+                            {`ΔV ${dualProbeMeasurement.differentialVoltage >= 0 ? '+' : ''}${dualProbeMeasurement.differentialVoltage.toFixed(2)}V · ${
+                              dualProbeMeasurement.estimatedOhms !== null
+                                ? `${dualProbeMeasurement.estimatedOhms}Ω`
+                                : dualProbeMeasurement.diodeDropVolts !== null
+                                ? `${dualProbeMeasurement.diodeDropVolts.toFixed(2)}Vf`
+                                : 'OL'
+                            }`}
+                          </text>
+                        </g>
+                      )}
+                    </g>
+                  )}
+
+                  {probeA && (
+                    <g>
+                      <circle cx={probeA.xNorm} cy={probeA.yNorm} r="18" fill="#ef4444" fillOpacity="0.22" stroke="#ef4444" strokeWidth="3" />
+                      <circle cx={probeA.xNorm} cy={probeA.yNorm} r="5.5" fill="#ef4444" stroke="#ffffff" strokeWidth="2" />
+                      <rect x={probeA.xNorm - 14} y={probeA.yNorm - 34} width="28" height="16" rx="4" fill="#ef4444" />
+                      <text x={probeA.xNorm} y={probeA.yNorm - 22.5} textAnchor="middle" fill="#ffffff" fontSize="10.5" fontFamily="monospace" fontWeight="bold">
+                        A+
+                      </text>
+                    </g>
+                  )}
+
+                  {probeB && (
+                    <g>
+                      <circle cx={probeB.xNorm} cy={probeB.yNorm} r="18" fill="#38bdf8" fillOpacity="0.22" stroke="#38bdf8" strokeWidth="3" />
+                      <circle cx={probeB.xNorm} cy={probeB.yNorm} r="5.5" fill="#38bdf8" stroke="#ffffff" strokeWidth="2" />
+                      <rect x={probeB.xNorm - 14} y={probeB.yNorm - 34} width="28" height="16" rx="4" fill="#0284c7" />
+                      <text x={probeB.xNorm} y={probeB.yNorm - 22.5} textAnchor="middle" fill="#ffffff" fontSize="10.5" fontFamily="monospace" fontWeight="bold">
+                        B-
+                      </text>
+                    </g>
+                  )}
                 </svg>
               )}
 
@@ -4148,50 +4663,67 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
           }`}
         >
           {/* Inspector Sub-Navigation Tabs */}
-          <div className="grid grid-cols-4 gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+          <div className="grid grid-cols-5 gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
             <button
+              type="button"
               onClick={() => setInspectorSubTab('PART')}
-              className={`py-1.5 px-2 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition ${
+              className={`py-1.5 px-1 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition ${
                 inspectorSubTab === 'PART'
                   ? 'bg-cyan-950 text-cyan-300 border border-cyan-500/50 shadow'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              <Cpu className="w-3 h-3" />
-              <span>Part ({components.length})</span>
+              <Cpu className="w-3 h-3 shrink-0" />
+              <span>Part</span>
             </button>
             <button
+              type="button"
               onClick={() => setInspectorSubTab('NETS')}
-              className={`py-1.5 px-2 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition ${
+              className={`py-1.5 px-1 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition ${
                 inspectorSubTab === 'NETS'
                   ? 'bg-cyan-950 text-cyan-300 border border-cyan-500/50 shadow'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              <Waypoints className="w-3 h-3" />
-              <span>Nets ({nets.length})</span>
+              <Waypoints className="w-3 h-3 shrink-0" />
+              <span>Nets</span>
             </button>
             <button
-              onClick={() => setInspectorSubTab('HOTSPOTS')}
-              className={`py-1.5 px-2 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition ${
-                inspectorSubTab === 'HOTSPOTS'
-                  ? 'bg-rose-950 text-rose-300 border border-rose-500/50 shadow'
+              type="button"
+              onClick={() => setInspectorSubTab('PROBE')}
+              className={`py-1.5 px-1 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition ${
+                inspectorSubTab === 'PROBE'
+                  ? 'bg-sky-950 text-sky-300 border border-sky-500/50 shadow'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              <AlertTriangle className="w-3 h-3" />
-              <span>Faults ({hotspots.length})</span>
+              <Crosshair className="w-3 h-3 shrink-0" />
+              <span>Probe</span>
             </button>
             <button
+              type="button"
+              onClick={() => setInspectorSubTab('AUDIT')}
+              className={`py-1.5 px-1 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 whitespace-nowrap transition ${
+                inspectorSubTab === 'AUDIT'
+                  ? 'bg-rose-950 text-rose-300 border border-rose-500/50 shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title={`Diagnostic Audit (${boardAuditFindings.length} findings)`}
+            >
+              <ShieldAlert className="w-3 h-3 shrink-0" />
+              <span>Audit {boardAuditFindings.length > 0 ? boardAuditFindings.length : ''}</span>
+            </button>
+            <button
+              type="button"
               onClick={() => setInspectorSubTab('THERMAL')}
-              className={`py-1.5 px-2 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition ${
+              className={`py-1.5 px-1 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1 transition ${
                 inspectorSubTab === 'THERMAL'
                   ? 'bg-amber-950 text-amber-300 border border-amber-500/50 shadow'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              <Thermometer className="w-3 h-3" />
-              <span>Thermal</span>
+              <Thermometer className="w-3 h-3 shrink-0" />
+              <span>IR</span>
             </button>
           </div>
 
@@ -4430,14 +4962,47 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
                       </div>
                     )}
 
-                    {/* Selected Pin Detailed Note */}
+                    {/* Selected Pin Detailed Note & Quick Probe Action */}
                     {selectedPinNumber && (
-                      <div className="text-[10px] text-slate-300 bg-slate-900/70 px-2.5 py-1.5 rounded border border-slate-800 font-sans">
-                        <strong className="text-cyan-400 font-mono">
-                          Pin #{selectedPinNumber} Function:{' '}
-                        </strong>
-                        {selectedComponent.pinSpecs?.find((p) => p.pinNumber === selectedPinNumber)
-                          ?.notes || 'Standard terminal connection.'}
+                      <div className="text-[10px] text-slate-300 bg-slate-900/70 px-2.5 py-1.5 rounded border border-slate-800 font-sans flex items-start justify-between gap-2">
+                        <div>
+                          <strong className="text-cyan-400 font-mono">
+                            Pin #{selectedPinNumber} Function:{' '}
+                          </strong>
+                          {selectedComponent.pinSpecs?.find((p) => p.pinNumber === selectedPinNumber)
+                            ?.notes || 'Standard terminal connection.'}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const idx =
+                              selectedComponent.pinSpecs?.findIndex(
+                                (p) => p.pinNumber === selectedPinNumber
+                              ) ?? -1;
+                            const pinObj = idx >= 0 ? selectedComponent.pinSpecs?.[idx] : undefined;
+                            if (!pinObj) return;
+                            const pt = computeComponentPinCoords(
+                              selectedComponent,
+                              idx,
+                              selectedComponent.pinSpecs?.length || 1
+                            );
+                            handlePlaceProbe({
+                              label: `${selectedComponent.refDes} #${pinObj.pinNumber} (${pinObj.pinName})`,
+                              compRefDes: selectedComponent.refDes,
+                              pinNumber: pinObj.pinNumber,
+                              pinName: pinObj.pinName,
+                              netId: pinObj.connectedNetId,
+                              nominalVoltage: pinObj.nominalVoltage,
+                              xNorm: pt.x,
+                              yNorm: pt.y,
+                            });
+                          }}
+                          className="shrink-0 px-2 py-1 rounded bg-sky-950 hover:bg-sky-900 border border-sky-500/50 text-sky-200 font-mono text-[9.5px] font-bold flex items-center gap-1"
+                          title="Anchor next Dual Probe (A or B) on this Pin"
+                        >
+                          <Crosshair className="w-3 h-3" />
+                          <span>Probe Pin</span>
+                        </button>
                       </div>
                     )}
 
@@ -4488,17 +5053,29 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
           {/* SUB-TAB 2: COPPER TRACE NETS & ORTHOGONAL ROUTER */}
           {inspectorSubTab === 'NETS' && (
             <div className="bg-slate-950 border border-slate-800 p-3 rounded-xl flex flex-col gap-2.5">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
                 <span className="text-[10.5px] font-bold text-cyan-300 uppercase">
                   Copper Trace Net Registry ({nets.length})
                 </span>
-                <button
-                  onClick={handleAddWaypointToActiveNet}
-                  disabled={!effectiveNetId}
-                  className="text-[10px] px-2 py-0.5 rounded bg-emerald-900/80 hover:bg-emerald-800 text-emerald-200 border border-emerald-600/50 disabled:opacity-40"
-                >
-                  + Add Trace Vertex
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={handleAddWaypointToActiveNet}
+                    disabled={!effectiveNetId}
+                    className="text-[10px] px-2 py-0.5 rounded bg-emerald-900/80 hover:bg-emerald-800 text-emerald-200 border border-emerald-600/50 disabled:opacity-40"
+                  >
+                    + Add Vertex
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteLastVertexFromActiveNet}
+                    disabled={!effectiveNetId}
+                    className="text-[10px] px-2 py-0.5 rounded bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-200 border border-slate-700 disabled:opacity-40"
+                    title="Remove last waypoint vertex from active net"
+                  >
+                    − Del Vertex
+                  </button>
+                </div>
               </div>
               <p className="text-[10px] text-slate-400 font-sans">
                 Click any net to highlight its connected pins and copper paths. Use &ldquo;Edit Traces&rdquo; in the canvas toolbar to drag individual trace vertices.
@@ -4528,6 +5105,7 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
                             {liveV.toFixed(2)}V
                           </span>
                           <button
+                            type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               handleAutoRouteNet(net.name);
@@ -4550,63 +5128,301 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
             </div>
           )}
 
-          {/* SUB-TAB 3: FAULT HOTSPOTS */}
-          {inspectorSubTab === 'HOTSPOTS' && (
-            <div className="bg-slate-950 border border-slate-800 p-3 rounded-xl flex flex-col gap-2">
-              <span className="text-[10.5px] text-rose-300 uppercase tracking-wider font-bold flex items-center gap-1.5">
-                <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
-                Diagnostic Fault & Stress Hotspots ({hotspots.length})
-              </span>
-              {hotspots.length === 0 ? (
-                <div className="text-[10.5px] text-slate-500 font-sans px-2 py-3 bg-slate-900 rounded-lg border border-slate-800 text-center">
-                  No thermal scorch or oxidation hotspots flagged on this board.
+          {/* SUB-TAB 3: DUAL-PROBE BENCH METER (CONTINUITY / DIODE / ΔV) */}
+          {inspectorSubTab === 'PROBE' && (
+            <div className="bg-slate-950 border border-slate-800 p-3 rounded-xl flex flex-col gap-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10.5px] font-bold text-sky-300 uppercase flex items-center gap-1.5">
+                  <Crosshair className="w-3.5 h-3.5 text-sky-400" />
+                  Dual-Probe MNA & Continuity Meter
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setInteractionMode('PROBE')}
+                  className={`text-[9.5px] px-2 py-0.5 rounded font-bold border transition ${
+                    interactionMode === 'PROBE'
+                      ? 'bg-sky-600 border-sky-400 text-white'
+                      : 'bg-slate-800 border-slate-700 text-sky-300 hover:border-sky-500'
+                  }`}
+                >
+                  {interactionMode === 'PROBE' ? 'Probing Active' : 'Activate Probe Tool'}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="p-2 rounded-lg bg-slate-900 border border-rose-500/40 flex flex-col gap-0.5">
+                  <span className="text-[9px] text-rose-300 font-bold uppercase">
+                    Probe A (Red +) {nextProbeSlot === 'A' ? '· NEXT' : ''}
+                  </span>
+                  <span className="text-[11px] font-bold text-white truncate">
+                    {probeA ? probeA.label : 'Unplaced'}
+                  </span>
+                  <span className="text-[10px] text-amber-300 tabular-nums font-bold">
+                    {probeA
+                      ? `${resolveLiveNetVoltage(probeA.netId, probeA.nominalVoltage).toFixed(3)} V DC`
+                      : '—'}
+                  </span>
+                  <span className="text-[9px] text-slate-400 truncate">
+                    {probeA ? probeA.netId : 'Click any node on board'}
+                  </span>
                 </div>
-              ) : (
-                <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto pr-1">
-                  {hotspots.map((h) => (
-                    <div
-                      key={h.id}
-                      onClick={() => {
-                        setSelectedHotspotId(h.id);
-                        if (h.suspectComponentRef) setSelectedCompRef(h.suspectComponentRef);
-                      }}
-                      className={`p-2.5 rounded-lg border cursor-pointer transition text-[10.5px] ${
-                        selectedHotspotId === h.id
-                          ? 'bg-rose-950/60 border-rose-400 text-white'
-                          : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
+
+                <div className="p-2 rounded-lg bg-slate-900 border border-sky-500/40 flex flex-col gap-0.5">
+                  <span className="text-[9px] text-sky-300 font-bold uppercase">
+                    Probe B (Black −) {nextProbeSlot === 'B' ? '· NEXT' : ''}
+                  </span>
+                  <span className="text-[11px] font-bold text-white truncate">
+                    {probeB ? probeB.label : 'Unplaced'}
+                  </span>
+                  <span className="text-[10px] text-amber-300 tabular-nums font-bold">
+                    {probeB
+                      ? `${resolveLiveNetVoltage(probeB.netId, probeB.nominalVoltage).toFixed(3)} V DC`
+                      : '—'}
+                  </span>
+                  <span className="text-[9px] text-slate-400 truncate">
+                    {probeB ? probeB.netId : 'Click second node'}
+                  </span>
+                </div>
+              </div>
+
+              {dualProbeMeasurement ? (
+                <div className="p-2.5 rounded-lg bg-slate-900/95 border border-cyan-500/40 flex flex-col gap-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <span className="text-[9px] text-slate-400 uppercase block font-sans">
+                        Differential Potential ΔV (A − B)
+                      </span>
+                      <span className="text-base font-extrabold text-amber-300 tabular-nums">
+                        {dualProbeMeasurement.differentialVoltage >= 0 ? '+' : ''}
+                        {dualProbeMeasurement.differentialVoltage.toFixed(3)} V DC
+                      </span>
+                    </div>
+                    <span
+                      className={`text-[9px] px-2 py-0.5 rounded font-bold border uppercase ${
+                        dualProbeMeasurement.continuityStatus === 'SHORT_FAULT'
+                          ? 'bg-rose-950 border-rose-500 text-rose-200'
+                          : dualProbeMeasurement.continuityStatus === 'CONTINUOUS'
+                          ? 'bg-emerald-950 border-emerald-500 text-emerald-200'
+                          : dualProbeMeasurement.continuityStatus === 'DIODE_JUNCTION' ||
+                            dualProbeMeasurement.continuityStatus === 'RESISTIVE'
+                          ? 'bg-amber-950 border-amber-500 text-amber-200'
+                          : 'bg-slate-800 border-slate-600 text-slate-300'
                       }`}
                     >
-                      <div className="flex items-center justify-between gap-2 font-bold">
-                        <span className="truncate">{h.label}</span>
-                        <span
-                          className={`text-[9px] px-1.5 py-0.5 rounded ${
-                            h.severity === 'CRITICAL'
-                              ? 'bg-rose-900 text-rose-200'
-                              : h.severity === 'WARNING'
-                              ? 'bg-amber-900 text-amber-200'
-                              : 'bg-cyan-900 text-cyan-200'
-                          }`}
-                        >
-                          {h.severity}
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-slate-300 font-sans mt-1 leading-relaxed">{h.notes}</p>
+                      {dualProbeMeasurement.continuityStatus.replace('_', ' ')}
+                    </span>
+                  </div>
+
+                  <div className="px-2 py-1.5 rounded bg-slate-950 border border-slate-800 text-[11px] font-bold text-cyan-200 tabular-nums">
+                    {dualProbeMeasurement.continuityLabel}
+                  </div>
+
+                  {dualProbeMeasurement.activeFaultNote && (
+                    <div className="px-2 py-1.5 rounded bg-rose-950/70 border border-rose-500/60 text-[10px] text-rose-200 font-sans">
+                      <strong>Fault Correlation:</strong> {dualProbeMeasurement.activeFaultNote}
                     </div>
-                  ))}
+                  )}
+
+                  <p className="text-[10px] text-slate-300 font-sans leading-relaxed">
+                    {dualProbeMeasurement.guidance}
+                  </p>
+                </div>
+              ) : (
+                <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 text-[10.5px] text-slate-400 font-sans text-center">
+                  Place both <strong>Probe A (+)</strong> and <strong>Probe B (−)</strong> on any pins or trace nodes to measure MNA ΔV, copper continuity, diode Vf, or CAN differential termination.
                 </div>
               )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={!probeA || !probeB}
+                  onClick={() => {
+                    if (!probeA || !probeB) return;
+                    setProbeA(probeB);
+                    setProbeB(probeA);
+                    setStatusMessage('Swapped Probe A (+) ↔ Probe B (−) polarity.');
+                  }}
+                  className="flex-1 py-1.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 border border-slate-700 text-[10px] font-semibold flex items-center justify-center gap-1"
+                >
+                  <ArrowLeftRight className="w-3 h-3" />
+                  <span>Swap A ↔ B</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!probeA && !probeB}
+                  onClick={() => {
+                    setProbeA(null);
+                    setProbeB(null);
+                    setNextProbeSlot('A');
+                    setStatusMessage('Cleared Dual Probes A & B.');
+                  }}
+                  className="py-1.5 px-3 rounded-lg bg-slate-800 hover:bg-rose-950 disabled:opacity-40 text-slate-300 hover:text-rose-200 border border-slate-700 text-[10px] font-semibold"
+                >
+                  Clear
+                </button>
+              </div>
             </div>
           )}
 
-          {/* SUB-TAB 4: ELECTRO-THERMAL IR SIMULATOR TELEMETRY */}
+          {/* SUB-TAB 4: AUTOMATED MNA/ERC AUDIT & PHYSICAL HOTSPOTS */}
+          {inspectorSubTab === 'AUDIT' && (
+            <div className="bg-slate-950 border border-slate-800 p-3 rounded-xl flex flex-col gap-3">
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10.5px] text-cyan-300 uppercase tracking-wider font-bold flex items-center gap-1.5">
+                    <ShieldAlert className="w-3.5 h-3.5 text-cyan-400" />
+                    Automated ERC / MNA Audit ({boardAuditFindings.length})
+                  </span>
+                  {criticalAuditCount > 0 && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-rose-950 border border-rose-500 text-rose-200 font-bold">
+                      {criticalAuditCount} CRITICAL
+                    </span>
+                  )}
+                </div>
+
+                {boardAuditFindings.length === 0 ? (
+                  <div className="text-[10.5px] text-emerald-300 font-sans px-2.5 py-2.5 bg-emerald-950/30 rounded-lg border border-emerald-700/50 text-center">
+                    All MNA voltage rails, thermal junctions, and netlist checks are nominal.
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto pr-1">
+                    {boardAuditFindings.map((finding) => (
+                      <div
+                        key={finding.id}
+                        onClick={() => {
+                          if (finding.targetCompRef) setSelectedCompRef(finding.targetCompRef);
+                          if (finding.targetNetId) setActiveNetId(finding.targetNetId);
+                          if (finding.targetHotspotId) setSelectedHotspotId(finding.targetHotspotId);
+                          if (finding.category === 'THERMAL') setShowThermalHeatmap(true);
+                          setStatusMessage(`AUDIT FOCUS: ${finding.title}`);
+                        }}
+                        className={`p-2 rounded-lg border cursor-pointer transition text-[10.5px] ${
+                          finding.severity === 'CRITICAL'
+                            ? 'bg-rose-950/50 border-rose-500/60 hover:border-rose-400 text-slate-100'
+                            : finding.severity === 'WARNING'
+                            ? 'bg-amber-950/40 border-amber-500/50 hover:border-amber-400 text-slate-200'
+                            : 'bg-slate-900 border-slate-800 hover:border-cyan-500/50 text-slate-300'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 font-bold">
+                          <span className="truncate">{finding.title}</span>
+                          <span
+                            className={`text-[8.5px] px-1.5 py-0.5 rounded shrink-0 ${
+                              finding.severity === 'CRITICAL'
+                                ? 'bg-rose-900 text-rose-100'
+                                : finding.severity === 'WARNING'
+                                ? 'bg-amber-900 text-amber-100'
+                                : 'bg-cyan-950 text-cyan-200'
+                            }`}
+                          >
+                            {finding.severity}
+                          </span>
+                        </div>
+                        <p className="text-[9.5px] text-slate-300 font-sans mt-1 leading-snug">
+                          {finding.detail}
+                        </p>
+                        <p className="text-[9px] text-cyan-300/90 font-sans mt-1">
+                          Action: {finding.recommendation}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-2 border-t border-slate-800 flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-1 flex-wrap">
+                  <span className="text-[10.5px] text-rose-300 uppercase tracking-wider font-bold flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                    Physical Hotspots ({hotspots.length})
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => handleAddManualHotspot('WARNING')}
+                      className="text-[9.5px] px-1.5 py-0.5 rounded bg-amber-950/80 hover:bg-amber-900 text-amber-200 border border-amber-600/50"
+                      title="Flag Warning Inspection Zone on Selected Component"
+                    >
+                      + Warning
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleAddManualHotspot('CRITICAL')}
+                      className="text-[9.5px] px-1.5 py-0.5 rounded bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-600/50"
+                      title="Flag Critical Fault Zone on Selected Component"
+                    >
+                      + Critical
+                    </button>
+                  </div>
+                </div>
+
+                {hotspots.length === 0 ? (
+                  <div className="text-[10.5px] text-slate-500 font-sans px-2 py-2.5 bg-slate-900 rounded-lg border border-slate-800 text-center">
+                    No physical hotspots flagged on this board.
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto pr-1">
+                    {hotspots.map((h) => (
+                      <div
+                        key={h.id}
+                        onClick={() => {
+                          setSelectedHotspotId(h.id);
+                          setShowHotspots(true);
+                          if (h.suspectComponentRef) setSelectedCompRef(h.suspectComponentRef);
+                        }}
+                        className={`p-2 rounded-lg border cursor-pointer transition text-[10.5px] ${
+                          selectedHotspotId === h.id
+                            ? 'bg-rose-950/60 border-rose-400 text-white'
+                            : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 font-bold">
+                          <span className="truncate">{h.label}</span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <span
+                              className={`text-[8.5px] px-1.5 py-0.5 rounded ${
+                                h.severity === 'CRITICAL'
+                                  ? 'bg-rose-900 text-rose-200'
+                                  : h.severity === 'WARNING'
+                                  ? 'bg-amber-900 text-amber-200'
+                                  : 'bg-cyan-900 text-cyan-200'
+                              }`}
+                            >
+                              {h.severity}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteHotspot(h.id);
+                              }}
+                              className="p-0.5 text-slate-500 hover:text-rose-300"
+                              title="Remove Hotspot Flag"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                        <p className="text-[9.5px] text-slate-300 font-sans mt-1 leading-relaxed">{h.notes}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* SUB-TAB 5: ELECTRO-THERMAL IR SIMULATOR TELEMETRY */}
           {inspectorSubTab === 'THERMAL' && (
             <div className="bg-slate-950 border border-slate-800 p-3 rounded-xl flex flex-col gap-2.5">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-[10.5px] font-bold text-amber-300 uppercase flex items-center gap-1.5">
                   <Thermometer className="w-3.5 h-3.5 text-rose-400" />
-                  Electro-Thermal Analysis
+                  Electro-Thermal (Peak {peakBoardTempC.toFixed(1)}°C)
                 </span>
                 <button
+                  type="button"
                   onClick={() => setShowThermalHeatmap((v) => !v)}
                   className={`text-[9.5px] px-2 py-0.5 rounded font-bold border transition ${
                     showThermalHeatmap
@@ -4633,12 +5449,19 @@ export const SchematicPcbScanner: React.FC<SchematicPcbScannerProps> = ({
                       }}
                       className="p-2 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 cursor-pointer flex flex-col gap-1"
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-cyan-300">
-                          {comp.refDes} <span className="text-slate-400 font-normal">({comp.marking})</span>
-                        </span>
+                      <div className="flex items-center justify-between gap-1.5">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-bold text-cyan-300 truncate">
+                            {comp.refDes} <span className="text-slate-400 font-normal">({comp.marking})</span>
+                          </span>
+                          {th.faultLinked && (
+                            <span className="text-[8px] px-1 py-0.5 rounded bg-rose-950 border border-rose-500/70 text-rose-200 font-bold shrink-0">
+                              FAULT
+                            </span>
+                          )}
+                        </div>
                         <span
-                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded tabular-nums shrink-0 ${
                             th.tempC >= 110
                               ? 'bg-rose-950 text-rose-300 border border-rose-600'
                               : th.tempC >= 80

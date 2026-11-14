@@ -833,9 +833,108 @@ function testBinaryStateMonitor() {
       vrefHigh.metrics.currentLogicLevel === 1 &&
       vrefHigh.metrics.dutyCyclePct === 100 &&
       psuOffCan.detectedProtocol === 'FAULT_OR_OFF' &&
-      psuOffCan.canFrameSummary?.health === 'POWER_OFF',
-    'TPS static 0 edges (LOW), VREF static 100% (HIGH), PSU OFF CAN -> POWER_OFF',
-    `tps=${tpsStatic.detectedProtocol}/${tpsStatic.metrics.edgeCount}/${tpsStatic.metrics.currentLogicLevel}, vref=${vrefHigh.metrics.dutyCyclePct}%/${vrefHigh.metrics.currentLogicLevel}, off=${psuOffCan.canFrameSummary?.health}`
+      psuOffCan.canFrameSummary?.health === 'POWER_OFF' &&
+      psuOffCan.anomalies.length === 0,
+    'TPS static 0 edges (LOW), VREF static 100% (HIGH), PSU OFF CAN -> POWER_OFF & 0 anomalies',
+    `tps=${tpsStatic.detectedProtocol}/${tpsStatic.metrics.edgeCount}/${tpsStatic.metrics.currentLogicLevel}, vref=${vrefHigh.metrics.dutyCyclePct}%/${vrefHigh.metrics.currentLogicLevel}, off=${psuOffCan.canFrameSummary?.health}, offAnomalies=${psuOffCan.anomalies.length}`
+  );
+
+  // 7.6: Diagnostic Notification System - Nominal Signals Produce Zero Critical/Warning Anomalies + Accurate Transition Frequency
+  const injNarrowHealthy = analyzePinBinaryState({
+    pinId: 'ecu-pin-10',
+    pinLabel: 'INJ_1',
+    pinNumber: 10,
+    mnaNodeVoltage: baseSolution.nodeVoltages['ecu-pin-10'] ?? 12.6,
+    isPowerOn: true,
+    hasCanFault: false,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 850,
+    tStartSec: 0.01,
+    windowMs: 40,
+  });
+
+  const healthyCriticalOrWarn = [
+    ...inj850.anomalies,
+    ...inj3000.anomalies,
+    ...ign1200.anomalies,
+    ...canHealthy.anomalies,
+    ...tpsStatic.anomalies,
+    ...vrefHigh.anomalies,
+    ...injNarrowHealthy.anomalies,
+  ].filter((a) => a.severity === 'CRITICAL' || a.severity === 'WARNING');
+
+  assert(
+    'Healthy Signals & Narrow 40ms Capture Window Produce 0 False-Positive Anomalies',
+    'Diagnostic Notifications',
+    healthyCriticalOrWarn.length === 0 &&
+      inj850.metrics.transitionFreqHz >= 18 &&
+      inj3000.metrics.transitionFreqHz >= 80 &&
+      canHealthy.metrics.transitionFreqHz >= 3000,
+    '0 CRITICAL/WARNING anomalies across healthy pins; transitionFreqHz >= 18Hz (850RPM), >=80Hz (3000RPM), >=3kHz (CAN)',
+    `falsePositives=${healthyCriticalOrWarn.length}, f850=${inj850.metrics.transitionFreqHz}Hz, f3000=${inj3000.metrics.transitionFreqHz}Hz, fCan=${canHealthy.metrics.transitionFreqHz}Hz`
+  );
+
+  // 7.7: Diagnostic Notification System - Invalid CAN Framing & PWM Signal Clipping Detection
+  const injOpenSol = solveCircuit(
+    healthyPsu,
+    DEFAULT_ECU_PINS,
+    [{ pinId: 'ecu-pin-10', faultType: 'OPEN_CIRCUIT', description: 'INJ_1 open harness', timestamp: Date.now() }],
+    DEFAULT_WIRES,
+    DEFAULT_BENCH_COMPONENTS,
+    dmmDummy
+  );
+  const injClippedOpen = analyzePinBinaryState({
+    pinId: 'ecu-pin-10',
+    pinLabel: 'INJ_1',
+    pinNumber: 10,
+    mnaNodeVoltage: injOpenSol.nodeVoltages['ecu-pin-10'] ?? 0,
+    faultType: 'OPEN_CIRCUIT',
+    isPowerOn: true,
+    hasCanFault: false,
+    hasInjectorFault: true,
+    isInjectorFiring: true,
+    rpm: 1200,
+    tStartSec: 0,
+    windowMs: 100,
+  });
+
+  const ignShortGnd = analyzePinBinaryState({
+    pinId: 'ecu-pin-11',
+    pinLabel: 'IGN_1',
+    pinNumber: 11,
+    mnaNodeVoltage: 0,
+    faultType: 'SHORT_TO_GND',
+    isPowerOn: true,
+    hasCanFault: false,
+    hasInjectorFault: false,
+    isInjectorFiring: true,
+    rpm: 1200,
+    tStartSec: 0,
+    windowMs: 100,
+  });
+
+  const hasInvalidCanFraming = canFaulted.anomalies.some(
+    (a) => a.code === 'INVALID_CAN_FRAMING' && a.title === 'Invalid CAN Framing' && a.severity === 'CRITICAL'
+  );
+  const hasInjPwmClipping = injClippedOpen.anomalies.some(
+    (a) => a.code === 'PWM_SIGNAL_CLIPPING' && a.title === 'PWM Signal Clipping' && a.severity === 'CRITICAL'
+  );
+  const hasIgnPwmClipping = ignShortGnd.anomalies.some(
+    (a) => a.code === 'PWM_SIGNAL_CLIPPING' && a.title === 'PWM Signal Clipping' && a.severity === 'CRITICAL'
+  );
+
+  assert(
+    'Faulted CAN & Clipped PWM Signals Flag Invalid CAN Framing & PWM Signal Clipping',
+    'Diagnostic Notifications',
+    hasInvalidCanFraming &&
+      canFaulted.metrics.transitionFreqHz === 0 &&
+      hasInjPwmClipping &&
+      injClippedOpen.metrics.transitionFreqHz === 0 &&
+      hasIgnPwmClipping &&
+      ignShortGnd.metrics.transitionFreqHz === 0,
+    'INVALID_CAN_FRAMING on faulted CAN_H; PWM_SIGNAL_CLIPPING on faulted INJ_1 & IGN_1 with 0 Hz transitions',
+    `canAlert=${hasInvalidCanFraming} (${canFaulted.metrics.transitionFreqHz}Hz), injClip=${hasInjPwmClipping} (${injClippedOpen.metrics.transitionFreqHz}Hz), ignClip=${hasIgnPwmClipping} (${ignShortGnd.metrics.transitionFreqHz}Hz)`
   );
 }
 
