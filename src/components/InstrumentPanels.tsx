@@ -165,6 +165,7 @@ export const InstrumentPanels: React.FC<InstrumentPanelsProps> = ({
               onChange={onChangePowerSupply}
               actualCurrentAmps={circuitSolution.supplyCurrentDrawAmps}
               isTripped={circuitSolution.isSupplyCurrentTripped}
+              actualOutputVoltage={circuitSolution.nodeVoltages['bench-vbat']}
             />
 
             <DigitalMultimeter
@@ -190,6 +191,7 @@ export const InstrumentPanels: React.FC<InstrumentPanelsProps> = ({
             onSelectPin={onSelectPin}
             onSearchDtc={onSearchDtc}
             selectedBrandKey={selectedBrandKey}
+            nodeVoltages={circuitSolution.nodeVoltages}
           />
         )}
       </div>

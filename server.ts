@@ -17,8 +17,42 @@ async function startServer() {
 
   app.use(express.json({ limit: '10mb' }));
 
+  // Lightweight per-IP sliding-window rate limiter for AI endpoints (20 req / 60s)
+  const rateLimitWindowMs = 60_000;
+  const rateLimitMax = 20;
+  const rateBuckets = new Map<string, number[]>();
+
+  const aiRateLimiter: express.RequestHandler = (req, res, next) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    const windowStart = now - rateLimitWindowMs;
+    const timestamps = (rateBuckets.get(ip) || []).filter((t) => t > windowStart);
+
+    if (timestamps.length >= rateLimitMax) {
+      const oldest = timestamps[0];
+      const retryAfterSec = Math.max(1, Math.ceil((oldest + rateLimitWindowMs - now) / 1000));
+      res.setHeader('Retry-After', String(retryAfterSec));
+      return res.status(429).json({
+        error: `Rate limit exceeded (max ${rateLimitMax} requests/minute). Please retry in ${retryAfterSec}s.`,
+      });
+    }
+
+    timestamps.push(now);
+    rateBuckets.set(ip, timestamps);
+
+    // Opportunistic cleanup to keep bucket map bounded
+    if (rateBuckets.size > 500) {
+      for (const [key, list] of rateBuckets.entries()) {
+        if (list.every((t) => t <= windowStart)) {
+          rateBuckets.delete(key);
+        }
+      }
+    }
+    next();
+  };
+
   // API Routes
-  app.post('/api/autoelectric/analyze-schematic', async (req, res) => {
+  app.post('/api/autoelectric/analyze-schematic', aiRateLimiter, async (req, res) => {
     try {
       const { imageBase64, mimeType, documentName, documentType, regionBox } = req.body;
       if (!imageBase64 || typeof imageBase64 !== 'string') {
@@ -59,7 +93,7 @@ async function startServer() {
   });
 
   // Google Search Grounding for Live OEM Bulletins, ECU Pinouts, & Diagnostic Procedures
-  app.post('/api/autoelectric/grounded-search', async (req, res) => {
+  app.post('/api/autoelectric/grounded-search', aiRateLimiter, async (req, res) => {
     try {
       const { query, ecuModel, dtcCode, contextType, customPrompt } = req.body;
       if (!query || typeof query !== 'string') {
@@ -221,7 +255,7 @@ Execute Google Search Grounding to retrieve up-to-date OEM technical service bul
 
   app.get('/api/autoelectric/health', (_req, res) => {
     const provider = process.env.IMAGE_ANALYSIS_PROVIDER || 'manual';
-    const hasKey = !!(process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY);
+    const hasKey = Boolean(process.env.GEMINI_API_KEY);
     res.json({
       status: 'ONLINE',
       serviceMode: provider === 'manual' ? 'MANUAL_REVIEW' : 'AI_IMAGE_ANALYSIS',

@@ -560,6 +560,74 @@ export const BenchVehicleEmulatorPanel: React.FC<BenchVehicleEmulatorPanelProps>
                 <span className="truncate">TPS {tpsPercent}%</span>
               </button>
             </div>
+
+            {/* CKP Signal Loss & CMP Cam/Crank Phase Correlation Controls */}
+            <div className="flex flex-col gap-1 pt-1 border-t border-slate-800/80">
+              <div className="flex items-center justify-between gap-1.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChangeRpmEmulator((prev) => ({
+                      ...prev,
+                      isActive: true,
+                      ckpSignalLost: !prev.ckpSignalLost,
+                    }))
+                  }
+                  aria-pressed={Boolean(rpmEmulator.ckpSignalLost)}
+                  title="Simulate Crankshaft 60-2 VR sensor signal dropout (triggers P0335)"
+                  className={`px-1.5 py-0.5 rounded border text-[9px] font-bold transition cursor-pointer ${
+                    rpmEmulator.ckpSignalLost
+                      ? 'bg-rose-950/80 border-rose-500 text-rose-300'
+                      : 'bg-slate-900/80 border-slate-700 text-slate-300 hover:border-cyan-500/50'
+                  }`}
+                >
+                  {rpmEmulator.ckpSignalLost ? 'CKP: LOST (P0335)' : 'CKP: 60-2 OK'}
+                </button>
+
+                <div className="flex items-center gap-1 text-[9px] text-slate-400">
+                  <span>CMP Phase:</span>
+                  <span
+                    className={`font-bold tabular-nums ${
+                      Math.abs(rpmEmulator.camPhaseOffsetDeg ?? 0) > 15
+                        ? 'text-rose-300'
+                        : 'text-cyan-300'
+                    }`}
+                  >
+                    {(rpmEmulator.camPhaseOffsetDeg ?? 0) > 0 ? '+' : ''}
+                    {rpmEmulator.camPhaseOffsetDeg ?? 0}°
+                  </span>
+                  {(rpmEmulator.camPhaseOffsetDeg ?? 0) !== 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onChangeRpmEmulator((prev) => ({ ...prev, camPhaseOffsetDeg: 0 }))
+                      }
+                      className="px-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
+                    >
+                      0°
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <input
+                type="range"
+                aria-label="CMP Camshaft Phase Offset Degrees"
+                min={-30}
+                max={30}
+                step={1}
+                value={rpmEmulator.camPhaseOffsetDeg ?? 0}
+                onChange={(e) => {
+                  const deg = parseInt(e.target.value, 10);
+                  onChangeRpmEmulator((prev) => ({
+                    ...prev,
+                    isActive: true,
+                    camPhaseOffsetDeg: deg,
+                  }));
+                }}
+                className="w-full accent-purple-400 h-1 bg-slate-800 rounded cursor-pointer"
+              />
+            </div>
           </div>
         </div>
       )}

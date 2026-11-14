@@ -232,7 +232,7 @@ export class CircuitNetwork {
       }
 
       // If source has internal resistance, stamp it into the diagonal
-      if (vs.internalResistanceOhms > 1e-4) {
+      if (vs.internalResistanceOhms > 0) {
         A[vEquationRow][vEquationRow] = -vs.internalResistanceOhms;
       }
 

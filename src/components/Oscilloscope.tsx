@@ -20,6 +20,8 @@ interface OscilloscopeProps {
   emulatorRpm?: number;
   isRpmEmulatorActive?: boolean;
   isInjectorFiring?: boolean;
+  camPhaseOffsetDeg?: number;
+  ckpSignalLost?: boolean;
   pins?: EcuPin[];
   nodeVoltages?: Record<string, number>;
   faults?: InjectedFault[];
@@ -49,9 +51,11 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
   hasCanFault,
   hasInjectorFault,
   simulationSpeed = 1.0,
-  emulatorRpm = 1200,
+  emulatorRpm = 850,
   isRpmEmulatorActive = false,
   isInjectorFiring = true,
+  camPhaseOffsetDeg = 0,
+  ckpSignalLost = false,
   pins = [],
   nodeVoltages = {},
   faults = [],
@@ -101,7 +105,23 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
   const ch1MnaVoltage = ch1Pin ? nodeVoltages[ch1Pin.id] ?? ch1Pin.nominalVoltage : 0;
   const ch2MnaVoltage = ch2Pin ? nodeVoltages[ch2Pin.id] ?? ch2Pin.nominalVoltage : 0;
 
-  const activeRpm = isRpmEmulatorActive ? emulatorRpm : 1200;
+  const canHMnaV = nodeVoltages['ecu-pin-13'] ?? 2.5;
+  const canLMnaV = nodeVoltages['ecu-pin-14'] ?? 2.5;
+  const injMnaV = nodeVoltages['ecu-pin-10'] ?? 12.6;
+  const o2MnaV = nodeVoltages['ecu-pin-15'] ?? 0.45;
+  const tpsMnaV = nodeVoltages['ecu-pin-7'] ?? 0.85;
+
+  const canPinFault = faults.find((f) => f.pinId === 'ecu-pin-13' || f.pinId === 'ecu-pin-14')?.faultType ?? 'NONE';
+  const injPinFault = faults.find((f) => f.pinId === 'ecu-pin-10')?.faultType ?? 'NONE';
+  const o2PinFault = faults.find((f) => f.pinId === 'ecu-pin-15')?.faultType ?? 'NONE';
+  const isCanBusHealthy =
+    isPowerOn &&
+    !hasCanFault &&
+    canHMnaV >= 0.3 &&
+    canLMnaV >= 0.3 &&
+    Math.abs(canHMnaV - canLMnaV) <= 3.0;
+
+  const activeRpm = isRpmEmulatorActive ? emulatorRpm : 850;
   const dualWindowMs = Math.max(10, Math.round(40 / timeDiv));
 
   // Stationary telemetry snapshot for DUAL_PIN mode (no animation loop state churn)
@@ -141,7 +161,7 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
     dualWindowMs,
   ]);
 
-  // Live physical measurements calculated from simulation parameters
+  // Live physical measurements anchored to MNA nodeVoltages & SignalGenerator
   let measuredVpp = '0.00 V';
   let measuredFreq = '0.0 Hz';
   let measuredDuty = '0.0 %';
@@ -157,34 +177,70 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
       dualTelemetry.phaseDiffDeg !== null ? `Δφ ${dualTelemetry.phaseDiffDeg.toFixed(1)}°` : `ΔV ${dualTelemetry.avgDiffV.toFixed(2)}V`;
   } else if (isPowerOn) {
     if (activeSignal === 'CAN_BUS') {
-      measuredVpp = hasCanFault ? '0.00 V' : '2.00 V';
-      measuredFreq = hasCanFault ? '0.0 kHz' : '500.0 kHz';
-      measuredDuty = '50.0 %';
-      measuredVrms = hasCanFault ? '0.00 V' : '2.50 V';
+      const canAvgV = (canHMnaV + canLMnaV) / 2;
+      measuredVpp = isCanBusHealthy ? '2.00 V' : '0.00 V';
+      measuredFreq = isCanBusHealthy ? '500.0 kHz' : '0.0 kHz';
+      measuredDuty = isCanBusHealthy ? '50.0 %' : '0.0 %';
+      measuredVrms = `${canAvgV.toFixed(2)} V`;
     } else if (activeSignal === 'INJECTOR_PWM') {
-      const injDisabled = hasInjectorFault || !isInjectorFiring;
-      const injFreqHz = Math.max(4, activeRpm / 60);
-      measuredVpp = injDisabled ? '0.00 V' : '65.00 V';
-      measuredFreq = injDisabled ? '0.0 Hz' : `${injFreqHz.toFixed(1)} Hz`;
-      measuredDuty = injDisabled ? '0.0 %' : `${Math.min(45, injFreqHz * 0.25).toFixed(1)} %`;
-      measuredVrms = injDisabled ? '0.00 V' : '12.4 V';
+      const injSeries = SignalGenerator.samplePinWaveformSeries({
+        pinId: 'ecu-pin-10',
+        pinLabel: 'INJ_1',
+        mnaNodeVoltage: injMnaV,
+        faultType: injPinFault,
+        isPowerOn,
+        hasCanFault,
+        hasInjectorFault,
+        isInjectorFiring,
+        rpm: activeRpm,
+        tStartSec: 0,
+        windowMs: 160,
+        sampleCount: 128,
+      });
+      measuredVpp = `${injSeries.vpp.toFixed(2)} V`;
+      measuredFreq = injSeries.freqHz > 0 ? `${injSeries.freqHz.toFixed(1)} Hz` : '0.0 Hz';
+      const dutyPct =
+        injSeries.freqHz > 0 ? Math.min(45, (2.5 / (1000 / injSeries.freqHz)) * 100) : 0;
+      measuredDuty = `${dutyPct.toFixed(1)} %`;
+      measuredVrms = `${injSeries.vAvg.toFixed(2)} V`;
     } else if (activeSignal === 'CRANK_CKP') {
-      const crankFreqKhz = ((activeRpm / 60) * 60) / 1000;
-      const vrPeak = Math.min(18.0, 1.2 + (activeRpm / 1000) * 1.8);
-      measuredVpp = `${(vrPeak * 2).toFixed(2)} V`;
-      measuredFreq = `${crankFreqKhz.toFixed(2)} kHz`;
-      measuredDuty = '48.5 %';
-      measuredVrms = `${(vrPeak * 0.707).toFixed(2)} V`;
+      if (ckpSignalLost) {
+        measuredVpp = '0.00 V';
+        measuredFreq = '0.00 kHz';
+        measuredDuty = 'CKP LOST';
+        measuredVrms = '0.00 V';
+      } else {
+        const crankFreqKhz = ((activeRpm / 60) * 60) / 1000;
+        const vrPeak = Math.min(18.0, 1.2 + (activeRpm / 1000) * 1.8);
+        measuredVpp = `${(vrPeak * 2).toFixed(2)} V`;
+        measuredFreq = `${crankFreqKhz.toFixed(2)} kHz`;
+        measuredDuty = `CMP ${camPhaseOffsetDeg > 0 ? '+' : ''}${camPhaseOffsetDeg}°`;
+        measuredVrms = `${(vrPeak * 0.707).toFixed(2)} V`;
+      }
     } else if (activeSignal === 'O2_LAMBDA') {
-      measuredVpp = '0.80 V';
-      measuredFreq = '1.25 Hz';
-      measuredDuty = '50.0 %';
-      measuredVrms = '0.45 V';
+      const o2Series = SignalGenerator.samplePinWaveformSeries({
+        pinId: 'ecu-pin-15',
+        pinLabel: 'O2_SIG',
+        mnaNodeVoltage: o2MnaV,
+        faultType: o2PinFault,
+        isPowerOn,
+        hasCanFault,
+        hasInjectorFault,
+        isInjectorFiring,
+        rpm: activeRpm,
+        tStartSec: 0,
+        windowMs: 1000,
+        sampleCount: 64,
+      });
+      measuredVpp = `${o2Series.vpp.toFixed(2)} V`;
+      measuredFreq = `${o2Series.freqHz.toFixed(2)} Hz`;
+      measuredDuty = o2Series.freqHz > 0 ? '50.0 %' : '0.0 %';
+      measuredVrms = `${o2Series.vAvg.toFixed(2)} V`;
     } else {
-      measuredVpp = '0.05 V';
+      measuredVpp = '0.00 V';
       measuredFreq = '0.0 Hz';
       measuredDuty = '100.0 %';
-      measuredVrms = '2.40 V';
+      measuredVrms = `${tpsMnaV.toFixed(2)} V`;
     }
   }
 
@@ -294,6 +350,7 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
           tStartSec: simTime,
           windowMs: dualWindowMs,
           sampleCount: 128,
+          skipCorrelation: true,
         });
 
         const samples = dual.samples;
@@ -398,13 +455,26 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
       } else if (activeSignal === 'CAN_BUS') {
         const dt = 0.000008 / timeDiv;
         const halfH = height / 2;
-        const scale = 45 * voltDiv;
+        const scale = 38 * voltDiv;
+        const canHardFault =
+          !isCanBusHealthy ||
+          canPinFault === 'SHORT_TO_GND' ||
+          canPinFault === 'SHORT_TO_VBAT' ||
+          canPinFault === 'OPEN_CIRCUIT';
+        const mnaOffsetH = canHMnaV - 2.5;
+        const mnaOffsetL = canLMnaV - 2.5;
 
-        // Compute both differential channels in one pass into reusable Float32Arrays
         for (let x = 0; x < width; x++) {
-          const sig = SignalGenerator.getCanBusSignals(simTime + x * dt, hasCanFault);
-          canHighBuf[x] = halfH - (sig.canHigh - 2.5) * scale - 25;
-          canLowBuf[x] = halfH - (sig.canLow - 2.5) * scale + 25;
+          if (canHardFault) {
+            canHighBuf[x] = halfH - (canHMnaV - 2.5) * scale - 20;
+            canLowBuf[x] = halfH - (canLMnaV - 2.5) * scale + 20;
+          } else {
+            const sig = SignalGenerator.getCanBusSignals(simTime + x * dt, false);
+            const vH = Math.max(0, sig.canHigh + mnaOffsetH);
+            const vL = Math.max(0, sig.canLow + mnaOffsetL);
+            canHighBuf[x] = halfH - (vH - 2.5) * scale - 20;
+            canLowBuf[x] = halfH - (vL - 2.5) * scale + 20;
+          }
         }
 
         // CH1 CAN_H Yellow
@@ -429,55 +499,82 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
         }
         ctx.stroke();
       } else if (activeSignal === 'INJECTOR_PWM') {
+        const injHardFault =
+          hasInjectorFault ||
+          injPinFault === 'SHORT_TO_GND' ||
+          injPinFault === 'SHORT_TO_VBAT' ||
+          injPinFault === 'OPEN_CIRCUIT';
         ctx.strokeStyle = '#38bdf8';
         ctx.shadowColor = '#38bdf8';
         ctx.shadowBlur = 5;
         ctx.beginPath();
         for (let x = 0; x < width; x++) {
           const tPoint = simTime + (x * 0.00015 / timeDiv);
-          const v = isInjectorFiring
-            ? SignalGenerator.getInjectorWaveform(tPoint, hasInjectorFault, 12.6, activeRpm)
-            : hasInjectorFault
-            ? 0.0
-            : 12.6;
-          const y = (height - 30) - (v * 3.2 * voltDiv);
+          const v =
+            isInjectorFiring && !injHardFault
+              ? SignalGenerator.getInjectorWaveform(tPoint, false, injMnaV, activeRpm)
+              : injMnaV;
+          const y = height - 30 - v * 2.6 * voltDiv;
           if (x === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         }
         ctx.stroke();
       } else if (activeSignal === 'CRANK_CKP') {
-        ctx.strokeStyle = '#4ade80';
-        ctx.shadowColor = '#4ade80';
+        // CH1: Crankshaft 60-2 VR signal (upper band, Green)
+        ctx.strokeStyle = ckpSignalLost ? '#f43f5e' : '#4ade80';
+        ctx.shadowColor = ckpSignalLost ? '#f43f5e' : '#4ade80';
         ctx.shadowBlur = 5;
         ctx.beginPath();
+        const ckpCenterY = height * 0.38;
         for (let x = 0; x < width; x++) {
           const tPoint = simTime + (x * 0.00008 / timeDiv);
-          const v = SignalGenerator.getCrankshaftVrSignal(tPoint, activeRpm);
-          const y = (height / 2) - (v * 16 * voltDiv);
+          const v = SignalGenerator.getCrankshaftVrSignal(tPoint, activeRpm, ckpSignalLost);
+          const y = ckpCenterY - v * 8 * voltDiv;
+          if (x === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // CH2: Camshaft Hall 5V sync pulse (lower band, Cyan) with phase offset
+        ctx.strokeStyle = '#22d3ee';
+        ctx.shadowColor = '#22d3ee';
+        ctx.shadowBlur = 5;
+        ctx.beginPath();
+        const cmpBaseY = height * 0.80;
+        for (let x = 0; x < width; x++) {
+          const tPoint = simTime + (x * 0.00008 / timeDiv);
+          const vCmp = SignalGenerator.getCamshaftHallSignal(tPoint, activeRpm, camPhaseOffsetDeg);
+          const y = cmpBaseY - vCmp * 6 * voltDiv;
           if (x === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         }
         ctx.stroke();
       } else if (activeSignal === 'O2_LAMBDA') {
+        const o2HardFault =
+          o2PinFault === 'SHORT_TO_GND' ||
+          o2PinFault === 'SHORT_TO_VBAT' ||
+          o2PinFault === 'OPEN_CIRCUIT';
         ctx.strokeStyle = '#f43f5e';
         ctx.shadowColor = '#f43f5e';
         ctx.shadowBlur = 5;
         ctx.beginPath();
         for (let x = 0; x < width; x++) {
           const tPoint = simTime + (x * 0.002 / timeDiv);
-          const v = 0.45 + 0.4 * Math.sin(tPoint * 2 * Math.PI * 1.25);
-          const y = (height / 2) - ((v - 0.5) * 120 * voltDiv);
+          const v = o2HardFault
+            ? o2MnaV
+            : Math.min(1.1, Math.max(0.05, o2MnaV + 0.35 * Math.sin(tPoint * 2 * Math.PI * 1.25)));
+          const y = height / 2 - (v - 0.5) * 100 * voltDiv;
           if (x === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         }
         ctx.stroke();
       } else {
-        // TPS_DC analog level
+        // TPS_DC analog level anchored strictly to live MNA node voltage on Pin 7
         ctx.strokeStyle = '#fbbf24';
         ctx.shadowColor = '#fbbf24';
         ctx.shadowBlur = 5;
         ctx.beginPath();
-        const y = (height - 40) - (2.4 * 35 * voltDiv);
+        const y = height - 35 - tpsMnaV * 28 * voltDiv;
         ctx.moveTo(0, y);
         ctx.lineTo(width, y);
         ctx.stroke();
@@ -538,6 +635,17 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
     simulationSpeed,
     activeRpm,
     isInjectorFiring,
+    camPhaseOffsetDeg,
+    ckpSignalLost,
+    isCanBusHealthy,
+    canPinFault,
+    injPinFault,
+    o2PinFault,
+    canHMnaV,
+    canLMnaV,
+    injMnaV,
+    o2MnaV,
+    tpsMnaV,
     ch1Pin,
     ch2Pin,
     ch1MnaVoltage,
@@ -618,11 +726,30 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
           ) : (
             <>
               <span className="text-yellow-400 font-bold bg-slate-950/85 px-1.5 sm:px-2 py-0.5 rounded border border-yellow-500/40 truncate">
-                CH1: {activeSignal === 'CAN_BUS' ? 'CAN_H (3.5V)' : activeSignal}
+                {activeSignal === 'CAN_BUS'
+                  ? `CH1: CAN_H (${canHMnaV.toFixed(2)}V)`
+                  : activeSignal === 'INJECTOR_PWM'
+                  ? `CH1: INJ_1 (${injMnaV.toFixed(2)}V)`
+                  : activeSignal === 'CRANK_CKP'
+                  ? `CH1: CKP 60-2 VR ${ckpSignalLost ? '(LOST · P0335)' : `(${activeRpm} RPM)`}`
+                  : activeSignal === 'O2_LAMBDA'
+                  ? `CH1: O2_SIG (${o2MnaV.toFixed(2)}V)`
+                  : `CH1: TPS_SIG (${tpsMnaV.toFixed(2)}V)`}
               </span>
               {activeSignal === 'CAN_BUS' && (
                 <span className="text-cyan-400 font-bold bg-slate-950/85 px-1.5 sm:px-2 py-0.5 rounded border border-cyan-500/40 truncate">
-                  CH2: CAN_L (1.5V Diff)
+                  CH2: CAN_L ({canLMnaV.toFixed(2)}V · {isCanBusHealthy ? '2.0V Diff' : 'FAULT'})
+                </span>
+              )}
+              {activeSignal === 'CRANK_CKP' && (
+                <span
+                  className={`font-bold bg-slate-950/85 px-1.5 sm:px-2 py-0.5 rounded border truncate ${
+                    Math.abs(camPhaseOffsetDeg) > 15
+                      ? 'text-rose-300 border-rose-500/50'
+                      : 'text-cyan-400 border-cyan-500/40'
+                  }`}
+                >
+                  CH2: CMP Hall ({camPhaseOffsetDeg > 0 ? '+' : ''}{camPhaseOffsetDeg}°{Math.abs(camPhaseOffsetDeg) > 15 ? ' · P0016' : ''})
                 </span>
               )}
             </>

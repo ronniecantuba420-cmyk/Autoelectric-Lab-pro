@@ -149,6 +149,20 @@ function testAutomotiveModels() {
 
   const canOpenTerm = AutomotiveModels.calculateCanBus(true, false);
   assertCloseTo('CAN Bus Single Term Open (120Ω Remaining)', 'Automotive Models', canOpenTerm.busResistanceOhms, 120.0, 0.1);
+
+  // 3.4: Ratiometric TPS & MAP scaling at reduced VREF and 0V safety
+  const tpsLowVref = AutomotiveModels.calculateTps(50, 2.5);
+  assertCloseTo('TPS 50% at 2.5V VREF Scales Ratiometrically (1.25V)', 'Automotive Models', tpsLowVref.track1Voltage, 1.25, 0.02);
+  const tpsZeroVref = AutomotiveModels.calculateTps(50, 0);
+  assert(
+    'TPS at 0V VREF Avoids NaN / Infinity',
+    'Automotive Models',
+    Number.isFinite(tpsZeroVref.track1Voltage) && Number.isFinite(tpsZeroVref.rLower) && tpsZeroVref.track1Voltage === 0,
+    'Finite 0V output & valid resistor divider',
+    `v=${tpsZeroVref.track1Voltage}, rLower=${tpsZeroVref.rLower}`
+  );
+  const mapLowVref = AutomotiveModels.calculateMap(100, 2.5);
+  assertCloseTo('MAP 100kPa at 2.5V VREF Scales Ratiometrically (2.25V)', 'Automotive Models', mapLowVref.voltage, 2.25, 0.02);
 }
 
 // ==========================================
@@ -201,7 +215,7 @@ function testFaultInjection() {
   assertCloseTo('TPS Short to VBAT Voltage (12.6V)', 'Fault Injection', vbatSol.multimeterReading.value, 12.6, 0.2);
   assert('TPS Short to VBAT Generates P0123 DTC', 'Fault Injection', vbatSol.activeDTCs.some(d => d.code === 'P0123'), 'Contains P0123', JSON.stringify(vbatSol.activeDTCs.map(d => d.code)));
 
-  // Fault 3: High Resistance Corrosion (250Ω)
+  // Fault 3: High Resistance Corrosion (250Ω) on TPS Pin 7
   const corrodeFault: InjectedFault[] = [
     { pinId: 'ecu-pin-7', faultType: 'HIGH_RESISTANCE_250R', description: 'Corroded pin terminal (250Ω)', timestamp: Date.now() },
   ];
@@ -212,6 +226,58 @@ function testFaultInjection() {
     corrodeSol.multimeterReading.value < normSol.multimeterReading.value,
     '< nominal 2.5V',
     `${corrodeSol.multimeterReading.value.toFixed(3)}V (nominal: ${normSol.multimeterReading.value.toFixed(3)}V)`
+  );
+
+  // Fault 4: True Series Open Circuit on TPS Signal (Pin 7)
+  const tpsOpenFault: InjectedFault[] = [
+    { pinId: 'ecu-pin-7', faultType: 'OPEN_CIRCUIT', description: 'TPS Signal Wire Break', timestamp: Date.now() },
+  ];
+  const tpsOpenSol = solveCircuit(normalSupply, basePins, tpsOpenFault, baseWires, testComponents, dmmVoltage);
+  assertCloseTo('TPS Pin 7 Open Circuit Isolates ADC Input (~0.0V)', 'Fault Injection', tpsOpenSol.nodeVoltages['ecu-pin-7'] ?? -1, 0.0, 0.05);
+  assert('TPS Open Circuit Triggers P0122', 'Fault Injection', tpsOpenSol.activeDTCs.some(d => d.code === 'P0122'), 'Contains P0122', JSON.stringify(tpsOpenSol.activeDTCs.map(d => d.code)));
+
+  // Fault 5: True Series Ground Corrosion (+50Ω) on KL31 Pin 1 causes genuine ground lift
+  const gndCorrodeFault: InjectedFault[] = [
+    { pinId: 'ecu-pin-1', faultType: 'HIGH_RESISTANCE_50R', description: 'Main Ground Fretting', timestamp: Date.now() },
+  ];
+  const gndCorrodeSol = solveCircuit(normalSupply, basePins, gndCorrodeFault, baseWires, testComponents, dmmVoltage);
+  const pin1GroundLift = gndCorrodeSol.nodeVoltages['ecu-pin-1'] ?? 0;
+  assert(
+    'Ground Corrosion (+50Ω on Pin 1) Causes Real Ground Offset > 1.5V',
+    'Fault Injection',
+    pin1GroundLift > 1.5 && pin1GroundLift < 5.0,
+    'Between 1.5V and 5.0V',
+    `${pin1GroundLift.toFixed(3)}V`
+  );
+
+  // Fault 6: Injector 1 Open Circuit triggers P0201 and collapses Pin 10 voltage
+  const injOpenFault: InjectedFault[] = [
+    { pinId: 'ecu-pin-10', faultType: 'OPEN_CIRCUIT', description: 'Injector 1 Open Circuit', timestamp: Date.now() },
+  ];
+  const injOpenSol = solveCircuit(normalSupply, basePins, injOpenFault, baseWires, testComponents, dmmVoltage);
+  assertCloseTo('Injector 1 Open Drops Pin 10 to 0.0V', 'Fault Injection', injOpenSol.nodeVoltages['ecu-pin-10'] ?? -1, 0.0, 0.05);
+  assert('Injector 1 Open Logs P0201 DTC', 'Fault Injection', injOpenSol.activeDTCs.some(d => d.code === 'P0201'), 'Contains P0201', JSON.stringify(injOpenSol.activeDTCs.map(d => d.code)));
+
+  // Fault 7: PSU Constant-Current (C.C.) Foldback Under Short to VBAT->GND & Low Supply P0562
+  const lowLimSupply: PowerSupplyState = {
+    voltageSetting: 12.6,
+    currentLimit: 2.0,
+    isOutputEnabled: true,
+    preset: '12V_BENCH',
+  };
+  const kl30ShortFault: InjectedFault[] = [
+    { pinId: 'ecu-pin-3', faultType: 'SHORT_TO_GND', description: 'KL30 Hard Short to GND', timestamp: Date.now() },
+  ];
+  const ccSol = solveCircuit(lowLimSupply, basePins, kl30ShortFault, baseWires, testComponents, dmmVoltage);
+  assert(
+    'PSU C.C. Foldback Collapses bench-vbat & Clamps Current <= Limit',
+    'Fault Injection',
+    ccSol.isSupplyCurrentTripped &&
+      (ccSol.nodeVoltages['bench-vbat'] ?? 12) < 2.0 &&
+      ccSol.supplyCurrentDrawAmps <= lowLimSupply.currentLimit + 0.05 &&
+      ccSol.activeDTCs.some(d => d.code === 'P0562'),
+    'Tripped=true, Vbat < 2.0V, I <= 2.0A, P0562',
+    `tripped=${ccSol.isSupplyCurrentTripped}, vbat=${(ccSol.nodeVoltages['bench-vbat'] ?? 0).toFixed(2)}V, I=${ccSol.supplyCurrentDrawAmps.toFixed(2)}A, dtcs=${ccSol.activeDTCs.map(d => d.code).join(',')}`
   );
 }
 
@@ -262,7 +328,7 @@ function testMultimeterModes() {
     `${liveOhmsSol.multimeterReading.display} (${liveOhmsSol.multimeterReading.warningMessage ?? 'OK'})`
   );
 
-  // 5.3: Continuity Mode
+  // 5.3: Continuity Mode (Key-OFF valid & Live Circuit lockout)
   const dmmCont: MultimeterState = {
     mode: 'CONTINUITY',
     redProbe: { attachedToPinId: 'ecu-pin-1', attachedLabel: 'KL31 GND 1' },
@@ -279,15 +345,101 @@ function testMultimeterModes() {
     'Continuity BEEP',
     contSol.multimeterReading.display
   );
+
+  const dmmContLive: MultimeterState = {
+    ...dmmCont,
+    redProbe: { attachedToPinId: 'ecu-pin-3', attachedLabel: 'KL30' },
+  };
+  const contLiveSol = solveCircuit(liveSupply, DEFAULT_ECU_PINS, [], DEFAULT_WIRES, DEFAULT_BENCH_COMPONENTS, dmmContLive);
+  assert(
+    'DMM Continuity on Live 12V Rail Triggers Warning & Lockout',
+    'Digital Multimeter',
+    contLiveSol.multimeterReading.isWarning && contLiveSol.multimeterReading.display === 'ERR',
+    'Warning ERR',
+    contLiveSol.multimeterReading.display
+  );
+
+  // 5.4: DMM AC Voltage & Frequency on Active Injector Pin
+  const dmmAcInj: MultimeterState = {
+    mode: 'V_AC',
+    redProbe: { attachedToPinId: 'ecu-pin-10', attachedLabel: 'INJ_1' },
+    blackProbe: { attachedToPinId: 'chassis-gnd', attachedLabel: 'Chassis GND' },
+    isPowered: true,
+    rangeAuto: true,
+    holdValue: false,
+  };
+  const acInjSol = solveCircuit(liveSupply, DEFAULT_ECU_PINS, [], DEFAULT_WIRES, DEFAULT_BENCH_COMPONENTS, dmmAcInj, { rpm: 1200, isInjectorFiring: true });
+  assert(
+    'DMM V_AC Measures Real Non-Zero AC RMS on Firing Injector',
+    'Digital Multimeter',
+    acInjSol.multimeterReading.value > 1.0,
+    '> 1.0V AC RMS',
+    `${acInjSol.multimeterReading.display} ${acInjSol.multimeterReading.unit}`
+  );
+
+  const dmmFreqInj: MultimeterState = { ...dmmAcInj, mode: 'FREQUENCY' };
+  const freqInjSol = solveCircuit(liveSupply, DEFAULT_ECU_PINS, [], DEFAULT_WIRES, DEFAULT_BENCH_COMPONENTS, dmmFreqInj, { rpm: 1200, isInjectorFiring: true });
+  assertCloseTo('DMM Frequency Mode Reads 20.0 Hz at 1200 RPM on INJ_1', 'Digital Multimeter', freqInjSol.multimeterReading.value, 20.0, 0.5);
+
+  // 5.5: DMM Diode Mode Measures Valid PN Drop on ECU Pin & O.L on Disconnected Open Wire
+  const dmmDiode: MultimeterState = {
+    mode: 'DIODE',
+    redProbe: { attachedToPinId: 'ecu-pin-7', attachedLabel: 'TPS_SIG' },
+    blackProbe: { attachedToPinId: 'chassis-gnd', attachedLabel: 'Chassis GND' },
+    isPowered: true,
+    rangeAuto: true,
+    holdValue: false,
+  };
+  const diodeSol = solveCircuit(offSupply, DEFAULT_ECU_PINS, [], DEFAULT_WIRES, DEFAULT_BENCH_COMPONENTS, dmmDiode);
+  assert(
+    'DMM Diode Mode Reads Forward Junction Drop (~0.5–0.8V) Key-OFF',
+    'Digital Multimeter',
+    diodeSol.multimeterReading.value >= 0.5 && diodeSol.multimeterReading.value <= 0.85,
+    '0.50V – 0.85V',
+    `${diodeSol.multimeterReading.display} ${diodeSol.multimeterReading.unit}`
+  );
 }
 
 // ==========================================
 // TEST SUITE 6: Oscilloscope Physical Signals
 // ==========================================
 function testOscilloscopeSignals() {
-  // 6.1: Crankshaft 60-2 Missing Tooth Pattern
+  // 6.1: Crankshaft 60-2 Missing Tooth Pattern & Signal Loss
   const crankTooth1 = SignalGenerator.getCrankshaftVrSignal(0.001, 1200);
-  assert('Crankshaft VR Signal Generates Dynamic Sine Wave', 'Oscilloscope Engine', typeof crankTooth1 === 'number' && !isNaN(crankTooth1), 'Valid Number', crankTooth1.toString());
+  const crankLost = SignalGenerator.getCrankshaftVrSignal(0.001, 1200, true);
+  assert('Crankshaft VR Signal Generates Dynamic Sine Wave', 'Oscilloscope Engine', typeof crankTooth1 === 'number' && !isNaN(crankTooth1) && crankLost === 0, 'Valid Number & 0 when lost', `${crankTooth1} / lost=${crankLost}`);
+
+  // 6.1b: Camshaft Hall Phase Shift + DTC P0016 / P0335
+  const cmpNom = SignalGenerator.getCamshaftHallSignal(0.001, 1200, 0);
+  const cmpShifted = SignalGenerator.getCamshaftHallSignal(0.001, 1200, 180);
+  assert('Camshaft Hall 180° Phase Shift Inverts Sync Pulse', 'Oscilloscope Engine', cmpNom === 5.0 && cmpShifted === 0.0, '5V @ 0°, 0V @ 180°', `nom=${cmpNom}V, shift180=${cmpShifted}V`);
+
+  const liveSupply: PowerSupplyState = {
+    voltageSetting: 12.6,
+    currentLimit: 5.0,
+    isOutputEnabled: true,
+    preset: '12V_BENCH',
+  };
+  const dmmDummy: MultimeterState = {
+    mode: 'V_DC',
+    redProbe: { attachedToPinId: 'ecu-pin-7', attachedLabel: 'TPS' },
+    blackProbe: { attachedToPinId: 'chassis-gnd', attachedLabel: 'GND' },
+    isPowered: true,
+    rangeAuto: true,
+    holdValue: false,
+  };
+  const ckpCmpFaultSol = solveCircuit(liveSupply, DEFAULT_ECU_PINS, [], DEFAULT_WIRES, DEFAULT_BENCH_COMPONENTS, dmmDummy, {
+    rpm: 1200,
+    camPhaseOffsetDeg: 22,
+    ckpSignalLost: true,
+  });
+  assert(
+    'CKP Signal Loss & >15° CMP Drift Log P0335 & P0016',
+    'Oscilloscope Engine',
+    ckpCmpFaultSol.activeDTCs.some(d => d.code === 'P0335') && ckpCmpFaultSol.activeDTCs.some(d => d.code === 'P0016'),
+    'Contains P0335 & P0016',
+    JSON.stringify(ckpCmpFaultSol.activeDTCs.map(d => d.code))
+  );
 
   // 6.2: Injector Waveform 3-Phase Physical Profile
   // Phase 1: MOSFET Dwell Saturation (0.2V)

@@ -1005,6 +1005,8 @@ function WorkspaceContent(props: LabWorkspaceLayoutProps) {
     return Boolean(injector?.state?.isFiring ?? true);
   }, [components]);
   const activeScopeRpm = rpmEmulator?.isActive ? rpmEmulator.rpm : 850;
+  const activeCamPhaseOffsetDeg = rpmEmulator?.camPhaseOffsetDeg ?? 0;
+  const isCkpSignalLost = Boolean(rpmEmulator?.ckpSignalLost);
   const vehicleContext = useMemo(
     () =>
       getSelectedVehicleContext(
@@ -1014,6 +1016,10 @@ function WorkspaceContent(props: LabWorkspaceLayoutProps) {
       ),
     [selectedBrandKey, selectedModelName, selectedEcuProfileId],
   );
+  const activeProfileLabel =
+    vehicleContext.brandKey === UNIVERSAL_BRAND_KEY
+      ? "Universal 16-Pin"
+      : vehicleContext.modelName;
   const layoutTier: WorkspaceLayoutTier =
     containerSize.width < 768
       ? "COMPACT_MOBILE"
@@ -1105,6 +1111,16 @@ function WorkspaceContent(props: LabWorkspaceLayoutProps) {
   }, [onNavigateTab]);
   const closePinOverlay = useCallback(() => setShowPinScopeOverlay(false), []);
 
+  useEffect(() => {
+    if (
+      activeTab !== "BENCH_LAB" &&
+      activeTab !== "WIRING_DIAGRAM" &&
+      activeTab !== "OSCILLOSCOPE"
+    ) {
+      setShowPinScopeOverlay(false);
+    }
+  }, [activeTab]);
+
   // One prop contract for all harness instances: fixes the missing pinout action in scope split view.
   const canvasProps = useMemo(
     () => ({
@@ -1123,6 +1139,8 @@ function WorkspaceContent(props: LabWorkspaceLayoutProps) {
       isPowerOn: powerSupply.isOutputEnabled,
       onOpenEcuPinouts,
       simulationSpeed,
+      ecuProfileLabel: activeProfileLabel,
+      hasInjectorFault,
     }),
     [
       pins,
@@ -1140,6 +1158,8 @@ function WorkspaceContent(props: LabWorkspaceLayoutProps) {
       powerSupply.isOutputEnabled,
       onOpenEcuPinouts,
       simulationSpeed,
+      activeProfileLabel,
+      hasInjectorFault,
     ],
   );
   const pinScopeProps = useMemo(
@@ -1445,6 +1465,8 @@ function WorkspaceContent(props: LabWorkspaceLayoutProps) {
                     emulatorRpm={rpmEmulator?.rpm}
                     isRpmEmulatorActive={rpmEmulator?.isActive}
                     isInjectorFiring={isInjectorFiring}
+                    camPhaseOffsetDeg={activeCamPhaseOffsetDeg}
+                    ckpSignalLost={isCkpSignalLost}
                     pins={pins}
                     nodeVoltages={circuitSolution.nodeVoltages}
                     faults={faults}
@@ -1502,8 +1524,9 @@ function WorkspaceContent(props: LabWorkspaceLayoutProps) {
         )}
       </ModuleErrorBoundary>
 
-      {!isEmbeddedPinScope && (
-        <div className="pointer-events-none fixed bottom-12 left-2.5 z-30 flex max-w-[calc(100vw-1.25rem)] flex-col items-start gap-2 sm:absolute sm:bottom-3 sm:left-3">
+      {!isEmbeddedPinScope &&
+        (activeTab === "BENCH_LAB" || activeTab === "WIRING_DIAGRAM") && (
+        <div className="pointer-events-none fixed bottom-[116px] left-2.5 z-30 flex max-w-[calc(100vw-1.25rem)] flex-col items-start gap-2 sm:absolute sm:bottom-3 sm:left-3">
           {showPinScopeOverlay && (
             <section
               id={scopeOverlayId}

@@ -133,6 +133,8 @@ interface WiringCanvasProps {
   isPowerOn: boolean;
   onOpenEcuPinouts?: () => void;
   simulationSpeed?: number;
+  ecuProfileLabel?: string;
+  hasInjectorFault?: boolean;
 }
 
 const AUTOMOTIVE_WIRE_COLORS = [
@@ -163,6 +165,8 @@ export const WiringCanvas: React.FC<WiringCanvasProps> = React.memo(({
   isPowerOn,
   onOpenEcuPinouts,
   simulationSpeed = 1.0,
+  ecuProfileLabel,
+  hasInjectorFault = false,
 }) => {
   useEffect(() => {
     recordRenderCycle('WiringCanvas');
@@ -171,6 +175,22 @@ export const WiringCanvas: React.FC<WiringCanvasProps> = React.memo(({
   const [wireSourcePin, setWireSourcePin] = useState<{ id: string; label: string } | null>(null);
   const [hoveredWireId, setHoveredWireId] = useState<string | null>(null);
   const [activePinMenuId, setActivePinMenuId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!activePinMenuId) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setActivePinMenuId(null);
+    };
+    const handlePointerDown = () => {
+      setActivePinMenuId(null);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [activePinMenuId]);
   const [zoomLevel, setZoomLevel] = useState(() =>
     typeof window !== 'undefined' && window.innerWidth < 640 ? 0.58 : 1.0
   );
@@ -651,7 +671,12 @@ export const WiringCanvas: React.FC<WiringCanvasProps> = React.memo(({
                     Socket View
                   </button>
                 )}
-                <span className="text-[10px] font-mono text-slate-400">ME7.5 1.8T</span>
+                <span
+                  className="text-[10px] font-mono text-slate-400 truncate max-w-[92px]"
+                  title={ecuProfileLabel || 'Universal 16-Pin'}
+                >
+                  {ecuProfileLabel || 'Universal 16-Pin'}
+                </span>
               </div>
             </div>
 
@@ -680,6 +705,7 @@ export const WiringCanvas: React.FC<WiringCanvasProps> = React.memo(({
                     onMouseLeave={() => setHoveredEcuPinId(null)}
                   >
                     <div
+                      onPointerDown={(e) => e.stopPropagation()}
                       onClick={() => handlePinAction(pin.id, pin.label)}
                       className={`h-full flex items-center justify-between px-2.5 rounded-md border text-[11px] font-mono cursor-pointer transition ${categoryBg} ${
                         isSelected ? 'ring-2 ring-cyan-400 border-cyan-400 font-bold' : 'hover:border-slate-600'
@@ -792,7 +818,10 @@ export const WiringCanvas: React.FC<WiringCanvasProps> = React.memo(({
 
                     {/* Contextual Pin Menu Popover */}
                     {isMenuOpen && (
-                      <div className="absolute left-[242px] top-0 z-30 w-44 bg-slate-900 border border-slate-700 rounded-lg p-1.5 shadow-2xl flex flex-col gap-1 text-[10px] font-mono">
+                      <div
+                        onPointerDown={(e) => e.stopPropagation()}
+                        className="absolute left-[242px] top-0 z-30 w-44 bg-slate-900 border border-slate-700 rounded-lg p-1.5 shadow-2xl flex flex-col gap-1 text-[10px] font-mono"
+                      >
                         <button
                           onClick={() => {
                             onAttachProbe('red', pin.id, `${pin.label} (${pin.name})`);
@@ -867,6 +896,7 @@ export const WiringCanvas: React.FC<WiringCanvasProps> = React.memo(({
                       onMouseLeave={() => setHoveredCompPinId(null)}
                     >
                       <div
+                        onPointerDown={(e) => e.stopPropagation()}
                         onClick={() => handlePinAction(cp.id, `${comp.name}: ${cp.label}`)}
                         className={`h-full flex items-center justify-between px-2 rounded border text-[10px] font-mono cursor-pointer transition bg-slate-950 ${
                           isSelected ? 'ring-1 ring-cyan-400 border-cyan-400 text-white' : 'border-slate-800 text-slate-300 hover:border-slate-700'
@@ -926,7 +956,10 @@ export const WiringCanvas: React.FC<WiringCanvasProps> = React.memo(({
 
                       {/* Component Contextual Menu */}
                       {isMenuOpen && (
-                        <div className="absolute left-[236px] top-0 z-30 w-44 bg-slate-900 border border-slate-700 rounded-lg p-1.5 shadow-2xl flex flex-col gap-1 text-[10px] font-mono">
+                        <div
+                          onPointerDown={(e) => e.stopPropagation()}
+                          className="absolute left-[236px] top-0 z-30 w-44 bg-slate-900 border border-slate-700 rounded-lg p-1.5 shadow-2xl flex flex-col gap-1 text-[10px] font-mono"
+                        >
                           <button
                             onClick={() => {
                               onAttachProbe('red', cp.id, `${comp.name}: ${cp.label}`);
@@ -1034,22 +1067,40 @@ export const WiringCanvas: React.FC<WiringCanvasProps> = React.memo(({
                 </div>
               )}
 
-              {comp.id === 'comp-inj' && (
-                <div className="bg-slate-950 p-2 rounded-md border border-slate-800 text-[10px] font-mono flex items-center justify-between mt-1">
-                  <span className="text-slate-400">PULSE:</span>
-                  <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                    PULSING 2.5ms
-                  </span>
-                </div>
-              )}
+              {comp.id === 'comp-inj' && (() => {
+                const isFiring = Boolean(comp.state?.isFiring ?? true);
+                return (
+                  <div className="bg-slate-950 p-2 rounded-md border border-slate-800 text-[10px] font-mono flex items-center justify-between mt-1">
+                    <span className="text-slate-400">PULSE:</span>
+                    {!isPowerOn ? (
+                      <span className="text-slate-500 font-semibold">STANDBY (0V)</span>
+                    ) : hasInjectorFault ? (
+                      <span className="text-rose-400 font-semibold">FAULTED (P0201)</span>
+                    ) : isFiring ? (
+                      <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                        PULSING 2.5ms
+                      </span>
+                    ) : (
+                      <span className="text-amber-400 font-semibold">PAUSED</span>
+                    )}
+                  </div>
+                );
+              })()}
 
-              {comp.id === 'comp-relay' && (
-                <div className="bg-slate-950 p-2 rounded-md border border-slate-800 text-[10px] font-mono flex items-center justify-between mt-1">
-                  <span className="text-slate-400">CONTACTS:</span>
-                  <span className="text-emerald-400 font-semibold">LATCHED 30&rarr;87</span>
-                </div>
-              )}
+              {comp.id === 'comp-relay' && (() => {
+                const isLatched = Boolean(comp.state?.isLatched ?? true);
+                return (
+                  <div className="bg-slate-950 p-2 rounded-md border border-slate-800 text-[10px] font-mono flex items-center justify-between mt-1">
+                    <span className="text-slate-400">CONTACTS:</span>
+                    {isPowerOn && isLatched ? (
+                      <span className="text-emerald-400 font-semibold">LATCHED 30&rarr;87</span>
+                    ) : (
+                      <span className="text-amber-400 font-semibold">OPEN 30-/-87</span>
+                    )}
+                  </div>
+                );
+              })()}
 
               {comp.id === 'comp-can' && (
                 <div className="bg-slate-950 p-2 rounded-md border border-slate-800 text-[10px] font-mono flex items-center justify-between text-slate-400 mt-1">

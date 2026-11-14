@@ -10,7 +10,8 @@ export class SignalGenerator {
    * @param rpm Engine rotational speed in RPM
    * @returns Instantaneous voltage in Volts
    */
-  public static getCrankshaftVrSignal(t: number, rpm = 1200): number {
+  public static getCrankshaftVrSignal(t: number, rpm = 1200, isLost = false): number {
+    if (isLost) return 0.0;
     const revsPerSec = rpm / 60.0;
     // 60 teeth per revolution (each tooth is 1/60th of a revolution)
     const teethPerSec = revsPerSec * 60.0;
@@ -29,11 +30,14 @@ export class SignalGenerator {
 
   /**
    * Generates Camshaft Hall Effect sensor square sync pulse.
-   * Runs at half crankshaft speed (4-stroke engine cycle).
+   * Runs at half crankshaft speed (4-stroke engine cycle), with configurable phase offset in degrees.
    */
-  public static getCamshaftHallSignal(t: number, rpm = 1200): number {
+  public static getCamshaftHallSignal(t: number, rpm = 1200, phaseOffsetDeg = 0): number {
     const camRevsPerSec = rpm / 120.0;
-    const camPhase = (t * camRevsPerSec) % 1.0;
+    // Shift in cam cycle (720° crank = 360° cam): normalized offset = phaseOffsetDeg / 360
+    const normalizedShift = phaseOffsetDeg / 360.0;
+    const rawPhase = (t * camRevsPerSec - normalizedShift) % 1.0;
+    const camPhase = rawPhase < 0 ? rawPhase + 1.0 : rawPhase;
     // Single 5V pulse over 180° of camshaft rotation (0.5 duty cycle)
     return camPhase < 0.5 ? 5.0 : 0.0;
   }
@@ -290,6 +294,7 @@ export class SignalGenerator {
     tStartSec: number;
     windowMs?: number;
     sampleCount?: number;
+    skipCorrelation?: boolean;
   }): {
     samples: Array<{
       timeMs: number;
@@ -441,7 +446,7 @@ export class SignalGenerator {
     let correlationMode: 'ANTI_PHASE' | 'IN_PHASE' | 'PHASE_SHIFTED' | 'UNCORRELATED' | 'DC_STATIC' =
       'DC_STATIC';
 
-    if (denom > 1e-4 && n >= 8) {
+    if (!params.skipCorrelation && denom > 1e-4 && n >= 8) {
       const rawR = Math.max(-1, Math.min(1, sumAB / denom));
       correlationR = Number(rawR.toFixed(3));
 

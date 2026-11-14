@@ -29,9 +29,11 @@ import {
   BenchComponent,
   DiagnosticTroubleCode,
   InjectedFault,
+  MultimeterState,
   PowerSupplyState,
   WireConnection,
 } from '../types/ecu';
+import type { RpmEmulatorState } from '../utils/vehicleEcuRegistry';
 
 interface BenchCloudModalProps {
   isOpen: boolean;
@@ -42,6 +44,11 @@ interface BenchCloudModalProps {
   components: BenchComponent[];
   activeDTCs: DiagnosticTroubleCode[];
   supplyCurrentDrawAmps: number;
+  selectedBrandKey?: string;
+  selectedModelName?: string;
+  selectedEcuProfileId?: string | null;
+  rpmEmulator?: RpmEmulatorState;
+  multimeter?: MultimeterState;
   onLoadBenchSession: (session: SavedBenchSession) => void;
 }
 
@@ -54,6 +61,11 @@ export const BenchCloudModal: React.FC<BenchCloudModalProps> = ({
   components,
   activeDTCs,
   supplyCurrentDrawAmps,
+  selectedBrandKey,
+  selectedModelName,
+  selectedEcuProfileId,
+  rpmEmulator,
+  multimeter,
   onLoadBenchSession,
 }) => {
   const { user, authReady, isSigningIn, authError, signInWithGoogle, signOutUser } = useAuth();
@@ -67,9 +79,15 @@ export const BenchCloudModal: React.FC<BenchCloudModalProps> = ({
   // Save Bench Session form
   const [sessionTitle, setSessionTitle] = useState('');
   const [sessionNotes, setSessionNotes] = useState('');
-  const [ecuLabel, setEcuLabel] = useState('Universal ECU Bench');
+  const [ecuLabel, setEcuLabel] = useState(selectedModelName || 'Universal ECU Bench');
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen && selectedModelName) {
+      setEcuLabel(selectedModelName);
+    }
+  }, [isOpen, selectedModelName]);
 
   // New Diagnostic Note form
   const [noteTitle, setNoteTitle] = useState('');
@@ -121,6 +139,11 @@ export const BenchCloudModal: React.FC<BenchCloudModalProps> = ({
         components,
         activeDtcs: activeDTCs.map((d) => d.code),
         supplyCurrentDrawAmps,
+        selectedBrandKey,
+        selectedModelName,
+        selectedEcuProfileId,
+        rpmEmulator,
+        multimeter,
       });
       setSessionTitle('');
       setSessionNotes('');

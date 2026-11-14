@@ -30,6 +30,7 @@ interface FaultInjectorProps {
   onSelectPin: (pinId: string) => void;
   onSearchDtc?: (dtcCode: string, description: string) => void;
   selectedBrandKey?: string;
+  nodeVoltages?: Record<string, number>;
 }
 
 export const FaultInjector: React.FC<FaultInjectorProps> = React.memo(({
@@ -43,6 +44,7 @@ export const FaultInjector: React.FC<FaultInjectorProps> = React.memo(({
   onSelectPin,
   onSearchDtc,
   selectedBrandKey,
+  nodeVoltages = {},
 }) => {
   const [scenariosOpen, setScenariosOpen] = useState(false);
   const [showAllBrands, setShowAllBrands] = useState(true);
@@ -50,7 +52,14 @@ export const FaultInjector: React.FC<FaultInjectorProps> = React.memo(({
     recordRenderCycle('FaultInjector');
   });
 
-  const currentPin = pins.find(p => p.id === selectedPinId) || pins[0];
+  const currentPin = pins.find(p => p.id === selectedPinId) || pins[0] || null;
+  if (!currentPin) {
+    return (
+      <div className="hud-panel rounded-xl p-3.5 text-xs font-mono text-slate-400">
+        No ECU pins loaded for fault injection.
+      </div>
+    );
+  }
   const activeFaultForPin = faults.find(f => f.pinId === currentPin.id);
 
   const faultOptions: { type: FaultType; label: string; desc: string; icon: React.ReactNode; color: string }[] = [
@@ -219,11 +228,23 @@ export const FaultInjector: React.FC<FaultInjectorProps> = React.memo(({
                     <div className="text-[9px] text-slate-400 font-sans leading-snug">
                       <span className="text-emerald-400 font-semibold">Expected:</span> {sc.expectedEcuBehavior}
                     </div>
-                    <div className="text-[9px] text-slate-500 flex items-center justify-between pt-0.5">
+                    <div className="text-[9px] text-slate-500 flex items-center justify-between pt-0.5 gap-2">
                       <span>
                         Bench Pin: {targetPin ? `${targetPin.label} (#${targetPin.pinNumber})` : sc.recommendedPinId}
+                        {nodeVoltages[sc.recommendedPinId] !== undefined
+                          ? ` (${nodeVoltages[sc.recommendedPinId].toFixed(2)}V)`
+                          : ''}
                       </span>
-                      <span>{sc.recommendedFaultType}</span>
+                      <span className="flex items-center gap-1.5">
+                        {isFaultInjected && (
+                          <span className="px-1 py-0.5 rounded bg-emerald-950/80 border border-emerald-500/50 text-emerald-300 font-bold text-[8px]">
+                            {activeDTCs.some((d) => sc.dtcCode.includes(d.code))
+                              ? 'MNA VERIFIED · DTC ACTIVE'
+                              : 'MNA FAULT ACTIVE'}
+                          </span>
+                        )}
+                        <span>{sc.recommendedFaultType}</span>
+                      </span>
                     </div>
                   </div>
                 );

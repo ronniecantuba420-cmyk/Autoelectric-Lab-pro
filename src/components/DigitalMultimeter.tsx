@@ -70,6 +70,7 @@ export const DigitalMultimeter: React.FC<DigitalMultimeterProps> = React.memo(({
   const [heldReading, setHeldReading] = useState<DigitalMultimeterProps['reading'] | null>(null);
   const [holdGlowActive, setHoldGlowActive] = useState<boolean>(false);
   const holdGlowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const modeButtonRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   // Clean up Hold glow timer on unmount
   useEffect(() => {
@@ -354,30 +355,33 @@ export const DigitalMultimeter: React.FC<DigitalMultimeterProps> = React.memo(({
               : 'left-1/2 -translate-x-1/2';
 
           const handleKeyDown = (e: React.KeyboardEvent) => {
+            let targetIndex: number | null = null;
             if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
               e.preventDefault();
-              const nextIndex = (idx + 1) % arr.length;
-              setMode(arr[nextIndex]);
-              setHoveredMode(arr[nextIndex]);
+              targetIndex = (idx + 1) % arr.length;
             } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
               e.preventDefault();
-              const prevIndex = (idx - 1 + arr.length) % arr.length;
-              setMode(arr[prevIndex]);
-              setHoveredMode(arr[prevIndex]);
+              targetIndex = (idx - 1 + arr.length) % arr.length;
             } else if (e.key === 'Home') {
               e.preventDefault();
-              setMode(arr[0]);
-              setHoveredMode(arr[0]);
+              targetIndex = 0;
             } else if (e.key === 'End') {
               e.preventDefault();
-              setMode(arr[arr.length - 1]);
-              setHoveredMode(arr[arr.length - 1]);
+              targetIndex = arr.length - 1;
+            }
+            if (targetIndex !== null) {
+              setMode(arr[targetIndex]);
+              setHoveredMode(arr[targetIndex]);
+              modeButtonRefs.current[targetIndex]?.focus();
             }
           };
 
           return (
             <div key={modeKey} className="relative group/btn flex flex-col items-center">
               <button
+                ref={(el) => {
+                  modeButtonRefs.current[idx] = el;
+                }}
                 role="radio"
                 tabIndex={isSelected ? 0 : -1}
                 aria-checked={isSelected}

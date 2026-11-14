@@ -77,11 +77,11 @@ function useDownscaledImage(src?: string, maxWidth = 1280): string | undefined {
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       canvas.toBlob(
         (blob) => {
+          canvas.width = 0;
+          canvas.height = 0;
           if (!active || !blob) return;
           objectUrl = URL.createObjectURL(blob);
           setResolvedSrc(objectUrl);
-          canvas.width = 0;
-          canvas.height = 0;
         },
         'image/webp',
         0.82

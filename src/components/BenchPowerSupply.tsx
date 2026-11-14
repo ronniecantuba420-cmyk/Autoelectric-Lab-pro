@@ -8,6 +8,7 @@ interface BenchPowerSupplyProps {
   onChange: (updated: PowerSupplyState) => void;
   actualCurrentAmps: number;
   isTripped: boolean;
+  actualOutputVoltage?: number;
 }
 
 export const BenchPowerSupply: React.FC<BenchPowerSupplyProps> = React.memo(({
@@ -15,6 +16,7 @@ export const BenchPowerSupply: React.FC<BenchPowerSupplyProps> = React.memo(({
   onChange,
   actualCurrentAmps,
   isTripped,
+  actualOutputVoltage,
 }) => {
   useEffect(() => {
     recordRenderCycle('BenchPowerSupply');
@@ -46,7 +48,10 @@ export const BenchPowerSupply: React.FC<BenchPowerSupplyProps> = React.memo(({
     });
   };
 
-  const powerWatts = powerSupply.isOutputEnabled ? powerSupply.voltageSetting * actualCurrentAmps : 0;
+  const effectiveVolts = powerSupply.isOutputEnabled
+    ? actualOutputVoltage ?? powerSupply.voltageSetting
+    : 0;
+  const powerWatts = powerSupply.isOutputEnabled ? effectiveVolts * actualCurrentAmps : 0;
 
   return (
     <div className="hud-panel text-slate-100 rounded-xl p-3.5 flex flex-col gap-3.5">
@@ -85,8 +90,8 @@ export const BenchPowerSupply: React.FC<BenchPowerSupplyProps> = React.memo(({
             <span>Voltage Output</span>
             <span className="text-amber-400 font-semibold">V</span>
           </div>
-          <div className="text-2xl font-mono font-bold text-amber-400 tabular-nums my-1">
-            {powerSupply.isOutputEnabled ? powerSupply.voltageSetting.toFixed(2) : '0.00'}
+          <div className={`text-2xl font-mono font-bold tabular-nums my-1 ${isTripped && powerSupply.isOutputEnabled ? 'text-rose-400' : 'text-amber-400'}`}>
+            {powerSupply.isOutputEnabled ? effectiveVolts.toFixed(2) : '0.00'}
           </div>
           <div className="text-[10px] font-mono text-slate-500">
             Set: {powerSupply.voltageSetting.toFixed(2)} V

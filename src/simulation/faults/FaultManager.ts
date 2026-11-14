@@ -6,6 +6,41 @@ import { CircuitNetwork } from '../electrical/CircuitNetwork';
  * Supports multiple simultaneous faults without overwriting.
  */
 export class FaultManager {
+  /**
+   * Returns physical series contact/break resistance (Ohms) introduced at a pin terminal
+   * by OPEN_CIRCUIT or HIGH_RESISTANCE_* faults.
+   */
+  public static getSeriesFaultOhms(faults: InjectedFault[], pinId: string): number {
+    const normPinId = pinId.toLowerCase();
+    let extraOhms = 0;
+
+    for (const fault of faults) {
+      if (fault.pinId.toLowerCase() !== normPinId) continue;
+      switch (fault.faultType) {
+        case 'OPEN_CIRCUIT':
+          return 1e9;
+        case 'HIGH_RESISTANCE_50R':
+          extraOhms += 50.0;
+          break;
+        case 'HIGH_RESISTANCE_250R':
+          extraOhms += 250.0;
+          break;
+        case 'HIGH_RESISTANCE_1K':
+          extraOhms += 1000.0;
+          break;
+        default:
+          break;
+      }
+    }
+
+    return extraOhms;
+  }
+
+  /**
+   * Applies topological shunt faults (SHORT_TO_GND / SHORT_TO_VBAT) directly to the MNA network.
+   * Series faults (OPEN_CIRCUIT / HIGH_RESISTANCE_*) are inserted in-series along pin/wire branches
+   * during network stamping via `getSeriesFaultOhms`.
+   */
   public static applyFaults(network: CircuitNetwork, faults: InjectedFault[]): void {
     for (const fault of faults) {
       const pinNode = fault.pinId.toLowerCase();
@@ -21,24 +56,9 @@ export class FaultManager {
           network.addResistor(`fault-short-vbat-${fault.pinId}`, pinNode, 'bench-vbat', 0.01);
           break;
 
-        case 'HIGH_RESISTANCE_50R':
-          // Adds 50Ω corrosion/contact resistance in series to ground or load
-          network.addResistor(`fault-high-r50-${fault.pinId}`, pinNode, 'chassis-gnd', 50.0);
-          break;
-
-        case 'HIGH_RESISTANCE_250R':
-          // Adds 250Ω harness corrosion resistance
-          network.addResistor(`fault-high-r250-${fault.pinId}`, pinNode, 'chassis-gnd', 250.0);
-          break;
-
-        case 'HIGH_RESISTANCE_1K':
-          // Adds 1000Ω high-resistance terminal oxidation
-          network.addResistor(`fault-high-r1k-${fault.pinId}`, pinNode, 'chassis-gnd', 1000.0);
-          break;
-
         case 'OPEN_CIRCUIT':
-          // An open circuit isolates the pin: simulated with Gmin bleed (10^9 Ω)
-          network.addResistor(`fault-open-${fault.pinId}`, pinNode, 'chassis-gnd', 1e9);
+          // Maintain tiny Gmin bleed (10^9 Ω) to prevent singular floating pin nodes
+          network.addResistor(`fault-open-bleed-${fault.pinId}`, pinNode, 'chassis-gnd', 1e9);
           break;
 
         default:

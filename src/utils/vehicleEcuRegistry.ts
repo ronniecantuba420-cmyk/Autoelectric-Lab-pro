@@ -13,6 +13,8 @@ export interface RpmEmulatorState {
   isActive: boolean;
   rpm: number;
   soundEnabled: boolean;
+  camPhaseOffsetDeg?: number;
+  ckpSignalLost?: boolean;
 }
 
 export interface VehicleMakeEntry {

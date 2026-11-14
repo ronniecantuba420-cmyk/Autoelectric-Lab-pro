@@ -15,10 +15,12 @@ import {
   AlertTriangle,
   ArrowLeftRight,
   ArrowUpDown,
+  Download,
   GitCompare,
   Maximize2,
   Pause,
   Play,
+  Ruler,
   X,
 } from 'lucide-react';
 import { EcuPin, InjectedFault } from '../types/ecu';
@@ -126,6 +128,14 @@ export const PinWaveformOscilloscope: React.FC<PinWaveformOscilloscopeProps> = (
   const [showDiffTrace, setShowDiffTrace] = useState(false);
   const [isAutoScale, setIsAutoScale] = useState(false);
   const [axisScaleMode, setAxisScaleMode] = useState<'AUTO' | 'SHARED' | 'SPLIT'>('AUTO');
+  const [showCursors, setShowCursors] = useState(false);
+  const [cursorAMs, setCursorAMs] = useState<number>(10);
+  const [cursorBMs, setCursorBMs] = useState<number>(30);
+
+  useEffect(() => {
+    setCursorAMs((prev) => Math.max(0, Math.min(windowMs, prev)));
+    setCursorBMs((prev) => Math.max(0, Math.min(windowMs, prev > windowMs ? windowMs * 0.75 : prev)));
+  }, [windowMs]);
 
   const ch1Pin = useMemo(() => {
     return (
@@ -377,6 +387,69 @@ export const PinWaveformOscilloscope: React.FC<PinWaveformOscilloscopeProps> = (
     ? dualWaveform.samples
     : singleWaveform?.samples ?? [];
 
+  const isSamePinSelected = Boolean(ch1Pin && ch2Pin && ch1Pin.id === ch2Pin.id);
+
+  const cursorMetrics = useMemo(() => {
+    if (!showCursors || chartData.length === 0) return null;
+    const findNearest = (tMs: number): OscChartPoint => {
+      let best = chartData[0];
+      let bestDist = Math.abs(best.timeMs - tMs);
+      for (let i = 1; i < chartData.length; i++) {
+        const d = Math.abs(chartData[i].timeMs - tMs);
+        if (d < bestDist) {
+          bestDist = d;
+          best = chartData[i];
+        }
+      }
+      return best;
+    };
+    const ptA = findNearest(cursorAMs);
+    const ptB = findNearest(cursorBMs);
+    const dtMs = Math.abs(ptB.timeMs - ptA.timeMs);
+    const invFreqHz = dtMs > 0.001 ? 1000 / dtMs : 0;
+    const ch1A = dualWaveform ? ptA.ch1 ?? 0 : ptA.voltage ?? 0;
+    const ch1B = dualWaveform ? ptB.ch1 ?? 0 : ptB.voltage ?? 0;
+    const ch2A = dualWaveform ? ptA.ch2 ?? 0 : 0;
+    const ch2B = dualWaveform ? ptB.ch2 ?? 0 : 0;
+    return {
+      tA: ptA.timeMs,
+      tB: ptB.timeMs,
+      dtMs,
+      invFreqHz,
+      ch1A,
+      ch1B,
+      ch1DeltaV: ch1B - ch1A,
+      ch2A,
+      ch2B,
+      ch2DeltaV: ch2B - ch2A,
+    };
+  }, [showCursors, chartData, cursorAMs, cursorBMs, dualWaveform]);
+
+  const handleExportCsv = () => {
+    if (chartData.length === 0) return;
+    const lines: string[] = [];
+    if (dualWaveform) {
+      lines.push(`timeMs,ch1_${ch1Pin?.label || 'CH1'}_V,ch2_${ch2Pin?.label || 'CH2'}_V,diff_V`);
+      for (const pt of chartData) {
+        lines.push(`${pt.timeMs},${(pt.ch1 ?? 0).toFixed(3)},${(pt.ch2 ?? 0).toFixed(3)},${(pt.diff ?? 0).toFixed(3)}`);
+      }
+    } else {
+      lines.push(`timeMs,${ch1Pin?.label || 'CH1'}_V,secondary_V`);
+      for (const pt of chartData) {
+        lines.push(`${pt.timeMs},${(pt.voltage ?? 0).toFixed(3)},${pt.secondaryVoltage !== undefined ? pt.secondaryVoltage.toFixed(3) : ''}`);
+      }
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ecu-scope-${ch1Pin?.label || 'pin'}-${windowMs}ms.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   return (
     <section
       aria-label="Selected ECU Pin Recharts Oscilloscope"
@@ -436,6 +509,33 @@ export const PinWaveformOscilloscope: React.FC<PinWaveformOscilloscopeProps> = (
           >
             <GitCompare className="w-3 h-3" />
             <span>{isDualTrace ? '2-CH DUAL' : '1-CH'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowCursors((prev) => !prev)}
+            aria-pressed={showCursors}
+            aria-label="Toggle A/B Measurement Cursors"
+            title="Show interactive A/B vertical cursors for Δt and ΔV measurements"
+            className={`px-2 py-1 text-[10px] rounded border flex items-center gap-1 font-bold transition ${
+              showCursors
+                ? 'bg-fuchsia-500/20 border-fuchsia-400 text-fuchsia-200'
+                : 'bg-slate-950 border-slate-700 text-slate-300 hover:border-fuchsia-500/50'
+            }`}
+          >
+            <Ruler className="w-3 h-3" />
+            <span>A/B</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleExportCsv}
+            aria-label="Export Waveform CSV Snapshot"
+            title="Download current waveform samples as CSV"
+            className="px-2 py-1 text-[10px] rounded border bg-slate-950 border-slate-700 hover:border-cyan-500/50 text-slate-300 hover:text-cyan-200 flex items-center gap-1 font-semibold transition"
+          >
+            <Download className="w-3 h-3" />
+            <span className="hidden sm:inline">CSV</span>
           </button>
 
           <button
@@ -596,6 +696,15 @@ export const PinWaveformOscilloscope: React.FC<PinWaveformOscilloscopeProps> = (
         )}
       </div>
 
+      {isSamePinSelected && ch1Pin && (
+        <div
+          role="status"
+          className="px-2.5 py-1 rounded border border-amber-500/40 bg-amber-950/40 text-amber-200 text-[10px]"
+        >
+          CH1 and CH2 are probing the same pin (#{ch1Pin.pinNumber} {ch1Pin.label}) — choose a companion pin on CH2 for differential or phase comparison.
+        </div>
+      )}
+
       {/* Recharts Real-Time Waveform Plot */}
       <div className={`w-full ${chartHeightClass} rounded-lg border border-slate-800 bg-[#03080c] p-1.5 relative`}>
         <ResponsiveContainer width="100%" height="100%">
@@ -674,6 +783,26 @@ export const PinWaveformOscilloscope: React.FC<PinWaveformOscilloscopeProps> = (
               strokeDasharray="4 4"
               strokeOpacity={0.45}
             />
+            {showCursors && (
+              <>
+                <ReferenceLine
+                  yAxisId="ch1"
+                  x={cursorAMs}
+                  stroke="#f472b6"
+                  strokeDasharray="3 3"
+                  strokeWidth={1.5}
+                  label={{ value: 'A', position: 'top', fill: '#f472b6', fontSize: 10 }}
+                />
+                <ReferenceLine
+                  yAxisId="ch1"
+                  x={cursorBMs}
+                  stroke="#a78bfa"
+                  strokeDasharray="3 3"
+                  strokeWidth={1.5}
+                  label={{ value: 'B', position: 'top', fill: '#a78bfa', fontSize: 10 }}
+                />
+              </>
+            )}
 
             {dualWaveform ? (
               <>
@@ -751,6 +880,63 @@ export const PinWaveformOscilloscope: React.FC<PinWaveformOscilloscopeProps> = (
           </div>
         )}
       </div>
+
+      {/* Interactive A/B Cursors Readout & Controls */}
+      {showCursors && cursorMetrics && (
+        <div
+          aria-label="A/B Cursor Measurements"
+          className="flex flex-col gap-1.5 text-[10px] bg-slate-950/90 border border-fuchsia-500/35 px-2.5 py-1.5 rounded-lg tabular-nums"
+        >
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-300">
+            <span className="text-fuchsia-300 font-bold">
+              A: {cursorMetrics.tA.toFixed(1)}ms ({cursorMetrics.ch1A.toFixed(2)}V{dualWaveform ? ` / ${cursorMetrics.ch2A.toFixed(2)}V` : ''})
+            </span>
+            <span className="text-violet-300 font-bold">
+              B: {cursorMetrics.tB.toFixed(1)}ms ({cursorMetrics.ch1B.toFixed(2)}V{dualWaveform ? ` / ${cursorMetrics.ch2B.toFixed(2)}V` : ''})
+            </span>
+            <span>
+              Δt: <strong className="text-cyan-300">{cursorMetrics.dtMs.toFixed(2)} ms</strong>
+              {cursorMetrics.invFreqHz > 0 ? ` (${cursorMetrics.invFreqHz >= 1000 ? `${(cursorMetrics.invFreqHz / 1000).toFixed(2)} kHz` : `${cursorMetrics.invFreqHz.toFixed(1)} Hz`})` : ''}
+            </span>
+            <span>
+              CH1 ΔV: <strong className="text-amber-300">{cursorMetrics.ch1DeltaV >= 0 ? '+' : ''}{cursorMetrics.ch1DeltaV.toFixed(2)} V</strong>
+            </span>
+            {dualWaveform && (
+              <span>
+                CH2 ΔV: <strong className="text-amber-300">{cursorMetrics.ch2DeltaV >= 0 ? '+' : ''}{cursorMetrics.ch2DeltaV.toFixed(2)} V</strong>
+              </span>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="flex items-center gap-1.5 text-fuchsia-300">
+              <span className="shrink-0">Pos A:</span>
+              <input
+                type="range"
+                aria-label="Cursor A Time Position (ms)"
+                min={0}
+                max={windowMs}
+                step={Math.max(0.5, windowMs / 80)}
+                value={cursorAMs}
+                onChange={(e) => setCursorAMs(parseFloat(e.target.value))}
+                className="w-full accent-fuchsia-400 h-1 bg-slate-800 rounded cursor-pointer"
+              />
+            </label>
+            <label className="flex items-center gap-1.5 text-violet-300">
+              <span className="shrink-0">Pos B:</span>
+              <input
+                type="range"
+                aria-label="Cursor B Time Position (ms)"
+                min={0}
+                max={windowMs}
+                step={Math.max(0.5, windowMs / 80)}
+                value={cursorBMs}
+                onChange={(e) => setCursorBMs(parseFloat(e.target.value))}
+                className="w-full accent-violet-400 h-1 bg-slate-800 rounded cursor-pointer"
+              />
+            </label>
+          </div>
+        </div>
+      )}
 
       {/* Correlation & Phase Analysis Strip (Dual-Trace Mode) */}
       {dualWaveform && correlationBadge && (

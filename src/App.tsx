@@ -173,11 +173,54 @@ export default function App() {
     recordRenderCycle('App');
   });
 
+  const wire9 = useMemo(() => wires.find((w) => w.id === 'wire-9'), [wires]);
+  const wire10 = useMemo(() => wires.find((w) => w.id === 'wire-10'), [wires]);
+  const wire11 = useMemo(() => wires.find((w) => w.id === 'wire-11'), [wires]);
+
+  const hasCanFault = useMemo(
+    () =>
+      faults.some((f) => f.pinId === 'ecu-pin-13' || f.pinId === 'ecu-pin-14') ||
+      Boolean(wire10?.isCut) ||
+      Boolean(wire11?.isCut),
+    [faults, wire10?.isCut, wire11?.isCut]
+  );
+
+  const hasInjectorFault = useMemo(
+    () => faults.some((f) => f.pinId === 'ecu-pin-10') || Boolean(wire9?.isCut),
+    [faults, wire9?.isCut]
+  );
+
+  const isInjectorFiring = useMemo(() => {
+    const inj = components.find((c) => c.id === 'comp-inj');
+    return Boolean(inj?.state?.isFiring ?? true);
+  }, [components]);
+
   // Memoize MNA circuit solution so UI-only state changes never re-allocate solver matrices
   const circuitSolution = useMemo(() => {
     recordRenderCycle('MnaSolver');
-    return solveCircuit(powerSupply, pins, faults, wires, components, multimeter);
-  }, [powerSupply, pins, faults, wires, components, multimeter]);
+    return solveCircuit(powerSupply, pins, faults, wires, components, multimeter, {
+      rpm: rpmEmulator.isActive ? rpmEmulator.rpm : 850,
+      isInjectorFiring,
+      hasCanFault,
+      hasInjectorFault,
+      camPhaseOffsetDeg: rpmEmulator.camPhaseOffsetDeg ?? 0,
+      ckpSignalLost: Boolean(rpmEmulator.ckpSignalLost),
+    });
+  }, [
+    powerSupply,
+    pins,
+    faults,
+    wires,
+    components,
+    multimeter,
+    rpmEmulator.isActive,
+    rpmEmulator.rpm,
+    rpmEmulator.camPhaseOffsetDeg,
+    rpmEmulator.ckpSignalLost,
+    isInjectorFiring,
+    hasCanFault,
+    hasInjectorFault,
+  ]);
 
   const offlineBotLiveContext = useMemo(
     () => ({
@@ -240,8 +283,13 @@ export default function App() {
         );
         if (exists) return prev;
 
+        const uniqueId =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? `wire-${crypto.randomUUID().slice(0, 8)}`
+            : `wire-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
         const newWire: WireConnection = {
-          id: `wire-${Date.now()}`,
+          id: uniqueId,
           sourcePinId,
           targetPinId,
           color: color || '#06b6d4',
@@ -355,10 +403,29 @@ export default function App() {
         )
       );
     }
+    if (session.selectedBrandKey) {
+      const nextBrand = session.selectedBrandKey;
+      const nextModel = session.selectedModelName || 'Generic 16-Pin Bench';
+      const nextProfileId = session.selectedEcuProfileId ?? null;
+      setSelectedBrandKey(nextBrand);
+      setSelectedModelName(nextModel);
+      setSelectedEcuProfileId(nextProfileId);
+      setPins(applyEcuProfileToPins(nextProfileId, DEFAULT_ECU_PINS));
+    }
+    if (session.rpmEmulator) {
+      setRpmEmulator({
+        isActive: Boolean(session.rpmEmulator.isActive),
+        rpm: Number(session.rpmEmulator.rpm) || 850,
+        soundEnabled: session.rpmEmulator.soundEnabled !== false,
+        camPhaseOffsetDeg: Number(session.rpmEmulator.camPhaseOffsetDeg) || 0,
+        ckpSignalLost: Boolean(session.rpmEmulator.ckpSignalLost),
+      });
+    }
+    if (session.multimeter) {
+      setMultimeter(session.multimeter);
+    }
   }, []);
 
-  const hasCanFault = faults.some((f) => f.pinId === 'ecu-pin-13' || f.pinId === 'ecu-pin-14');
-  const hasInjectorFault = faults.some((f) => f.pinId === 'ecu-pin-10');
   const selectedPin = pins.find((p) => p.id === selectedPinId);
 
   const handleQuickAttachRedProbe = useCallback(() => {
@@ -481,6 +548,11 @@ export default function App() {
             components={components}
             activeDTCs={circuitSolution.activeDTCs}
             supplyCurrentDrawAmps={circuitSolution.supplyCurrentDrawAmps}
+            selectedBrandKey={selectedBrandKey}
+            selectedModelName={selectedModelName}
+            selectedEcuProfileId={selectedEcuProfileId}
+            rpmEmulator={rpmEmulator}
+            multimeter={multimeter}
             onLoadBenchSession={handleLoadBenchSession}
           />
         </Suspense>

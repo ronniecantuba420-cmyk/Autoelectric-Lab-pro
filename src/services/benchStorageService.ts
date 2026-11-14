@@ -15,9 +15,11 @@ import { auth, db } from '../lib/firebase';
 import {
   BenchComponent,
   InjectedFault,
+  MultimeterState,
   PowerSupplyState,
   WireConnection,
 } from '../types/ecu';
+import type { RpmEmulatorState } from '../utils/vehicleEcuRegistry';
 import { GroundedSearchSource } from './groundedSearchService';
 import {
   ImageAnalysisComponent,
@@ -89,6 +91,11 @@ export interface SavedBenchSession {
   componentStates: Record<string, Record<string, number | boolean | string>>;
   activeDtcs: string[];
   supplyCurrentDrawAmps: number;
+  selectedBrandKey?: string;
+  selectedModelName?: string;
+  selectedEcuProfileId?: string | null;
+  rpmEmulator?: RpmEmulatorState;
+  multimeter?: MultimeterState;
   createdAt?: Timestamp | null;
   updatedAt?: Timestamp | null;
 }
@@ -179,6 +186,11 @@ export async function saveBenchSession(
     components: BenchComponent[];
     activeDtcs: string[];
     supplyCurrentDrawAmps: number;
+    selectedBrandKey?: string;
+    selectedModelName?: string;
+    selectedEcuProfileId?: string | null;
+    rpmEmulator?: RpmEmulatorState;
+    multimeter?: MultimeterState;
   }
 ): Promise<string> {
   const sessionId = makeSafeId('bench');
@@ -213,7 +225,7 @@ export async function saveBenchSession(
     .map((code) => String(code).slice(0, 32));
 
   try {
-    await setDoc(doc(db, 'users', uid, 'benchSessions', sessionId), {
+    const docData: Record<string, unknown> = {
       id: sessionId,
       ownerId: uid,
       title: payload.title.trim().slice(0, 120) || 'ECU Bench Snapshot',
@@ -232,7 +244,50 @@ export async function saveBenchSession(
       supplyCurrentDrawAmps: Number(payload.supplyCurrentDrawAmps) || 0,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    });
+    };
+
+    if (payload.selectedBrandKey !== undefined) {
+      docData.selectedBrandKey = String(payload.selectedBrandKey).slice(0, 64);
+    }
+    if (payload.selectedModelName !== undefined) {
+      docData.selectedModelName = String(payload.selectedModelName).slice(0, 120);
+    }
+    if (payload.selectedEcuProfileId !== undefined) {
+      docData.selectedEcuProfileId = payload.selectedEcuProfileId
+        ? String(payload.selectedEcuProfileId).slice(0, 64)
+        : null;
+    }
+    if (payload.rpmEmulator) {
+      docData.rpmEmulator = {
+        isActive: Boolean(payload.rpmEmulator.isActive),
+        rpm: Number(payload.rpmEmulator.rpm) || 850,
+        soundEnabled: Boolean(payload.rpmEmulator.soundEnabled),
+        camPhaseOffsetDeg: Number(payload.rpmEmulator.camPhaseOffsetDeg) || 0,
+        ckpSignalLost: Boolean(payload.rpmEmulator.ckpSignalLost),
+      };
+    }
+    if (payload.multimeter) {
+      docData.multimeter = {
+        mode: String(payload.multimeter.mode).slice(0, 24),
+        redProbe: {
+          attachedToPinId: payload.multimeter.redProbe.attachedToPinId
+            ? String(payload.multimeter.redProbe.attachedToPinId).slice(0, 64)
+            : null,
+          attachedLabel: String(payload.multimeter.redProbe.attachedLabel || 'Unconnected').slice(0, 120),
+        },
+        blackProbe: {
+          attachedToPinId: payload.multimeter.blackProbe.attachedToPinId
+            ? String(payload.multimeter.blackProbe.attachedToPinId).slice(0, 64)
+            : null,
+          attachedLabel: String(payload.multimeter.blackProbe.attachedLabel || 'Unconnected').slice(0, 120),
+        },
+        isPowered: Boolean(payload.multimeter.isPowered),
+        rangeAuto: Boolean(payload.multimeter.rangeAuto),
+        holdValue: Boolean(payload.multimeter.holdValue),
+      };
+    }
+
+    await setDoc(doc(db, 'users', uid, 'benchSessions', sessionId), docData);
     return sessionId;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);

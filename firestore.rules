@@ -54,7 +54,10 @@ service cloud.firestore {
         data.keys().hasOnly([
           'id', 'ownerId', 'title', 'notes', 'ecuProfileLabel',
           'powerSupply', 'wires', 'faults', 'componentStates',
-          'activeDtcs', 'supplyCurrentDrawAmps', 'createdAt', 'updatedAt'
+          'activeDtcs', 'supplyCurrentDrawAmps',
+          'selectedBrandKey', 'selectedModelName', 'selectedEcuProfileId',
+          'rpmEmulator', 'multimeter',
+          'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.id) && data.id == sessionId &&
         isValidId(data.ownerId) && data.ownerId == userId && data.ownerId == request.auth.uid &&
@@ -76,6 +79,30 @@ service cloud.firestore {
         data.activeDtcs is list && data.activeDtcs.size() <= 20 &&
         (data.activeDtcs.size() == 0 || (data.activeDtcs[0] is string && data.activeDtcs[0].size() <= 32)) &&
         data.supplyCurrentDrawAmps is number &&
+        (!('selectedBrandKey' in data) || (data.selectedBrandKey is string && data.selectedBrandKey.size() <= 64)) &&
+        (!('selectedModelName' in data) || (data.selectedModelName is string && data.selectedModelName.size() <= 120)) &&
+        (!('selectedEcuProfileId' in data) || data.selectedEcuProfileId == null || (data.selectedEcuProfileId is string && data.selectedEcuProfileId.size() <= 64)) &&
+        (!('rpmEmulator' in data) || (
+          data.rpmEmulator is map &&
+          data.rpmEmulator.keys().hasAll(['isActive', 'rpm', 'soundEnabled']) &&
+          data.rpmEmulator.keys().hasOnly(['isActive', 'rpm', 'soundEnabled', 'camPhaseOffsetDeg', 'ckpSignalLost']) &&
+          data.rpmEmulator.isActive is bool &&
+          data.rpmEmulator.rpm is number &&
+          data.rpmEmulator.soundEnabled is bool &&
+          (!('camPhaseOffsetDeg' in data.rpmEmulator) || data.rpmEmulator.camPhaseOffsetDeg is number) &&
+          (!('ckpSignalLost' in data.rpmEmulator) || data.rpmEmulator.ckpSignalLost is bool)
+        )) &&
+        (!('multimeter' in data) || (
+          data.multimeter is map &&
+          data.multimeter.keys().hasAll(['mode', 'redProbe', 'blackProbe', 'isPowered', 'rangeAuto', 'holdValue']) &&
+          data.multimeter.keys().hasOnly(['mode', 'redProbe', 'blackProbe', 'isPowered', 'rangeAuto', 'holdValue']) &&
+          data.multimeter.mode is string && data.multimeter.mode.size() <= 24 &&
+          data.multimeter.redProbe is map &&
+          data.multimeter.blackProbe is map &&
+          data.multimeter.isPowered is bool &&
+          data.multimeter.rangeAuto is bool &&
+          data.multimeter.holdValue is bool
+        )) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -165,7 +192,9 @@ service cloud.firestore {
           incoming().updatedAt == request.time &&
           incoming().diff(existing()).affectedKeys().hasOnly([
             'title', 'notes', 'ecuProfileLabel', 'powerSupply', 'wires',
-            'faults', 'componentStates', 'activeDtcs', 'supplyCurrentDrawAmps', 'updatedAt'
+            'faults', 'componentStates', 'activeDtcs', 'supplyCurrentDrawAmps',
+            'selectedBrandKey', 'selectedModelName', 'selectedEcuProfileId',
+            'rpmEmulator', 'multimeter', 'updatedAt'
           ]);
         allow delete: if isValidId(userId) && isValidId(sessionId) && isVerified() && isOwner(userId);
       }

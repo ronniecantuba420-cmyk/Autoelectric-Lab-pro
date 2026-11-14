@@ -94,6 +94,32 @@
           "type": "number",
           "description": "MNA-solved total bench supply current draw in Amperes."
         },
+        "selectedBrandKey": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 64,
+          "description": "Optional selected vehicle make identifier."
+        },
+        "selectedModelName": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 120,
+          "description": "Optional selected vehicle model name."
+        },
+        "selectedEcuProfileId": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 64,
+          "description": "Optional ECU hardware profile ID."
+        },
+        "rpmEmulator": {
+          "type": "object",
+          "description": "Optional CKP/CMP emulator state (isActive, rpm, soundEnabled, camPhaseOffsetDeg, ckpSignalLost)."
+        },
+        "multimeter": {
+          "type": "object",
+          "description": "Optional digital multimeter mode and probe placement state."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
